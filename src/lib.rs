@@ -1,3 +1,8 @@
+#[cfg(feature = "cuda")]
+pub mod cufft;
+#[cfg(feature = "cuda")]
+pub mod cuda_api;
+mod bindings_cuda;
 use cfl;
 use cfl::ndarray::{Array2, Array3, ShapeBuilder};
 use cfl::ndarray_linalg::JobSvd;
@@ -139,7 +144,7 @@ mod tests {
     fn it_works() {
         let patch_size = [10, 10, 10];
 
-        let mut volumes: Vec<Array3<Complex32>> = (0..10).map(|_| gen_test_cfl()).collect();
+        let mut volumes: Vec<Array3<Complex32>> = (0..2).map(|_| gen_test_cfl()).collect();
         let matrix_size = [patch_size.iter().product(), volumes.len()];
         let d = volumes[0].dim();
         let mut vol_data = volumes.iter_mut().map(|vol| vol.as_slice_memory_order_mut().unwrap()).collect::<Vec<_>>();

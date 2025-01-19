@@ -4,4 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-cfl = { git = "https://github.com/wyatt-A/cfl.git", features = ["linalg-openblas"] }
+cfl = { git = "https://github.com/wyatt-A/cfl.git", features = ["linalg-mkl-static"] }
+
+[build-dependencies]
+bindgen = "0.71.1"
+
+[features]
+default = []
+cuda = []
