@@ -1,14 +1,19 @@
 // build.rs
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-const CUDA_LIB_DIR: &str = "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\lib\\x64";
-const CUDA_INCLUDE_DIR: &str = "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include";
+//const CUDA_LIB_DIR: &str = "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\lib\\x64";
+//const CUDA_INCLUDE_DIR: &str = "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include";
 fn main() {
     if env::var_os("CARGO_FEATURE_CUDA").is_none() {
         return;
     }
+
+    // resolve the location installed libraries
+    let cuda_path = env::var("CUDA_PATH").expect("CUDA_PATH is not set");
+    let cuda_lib_dir = Path::new(cuda_path.as_str()).join("lib").join("x64");
+    let cuda_include_dir = Path::new(cuda_path.as_str()).join("include");
 
     // --- 1. Instruct Cargo to link against cusolver, cublas, cudart, etc. ---
     // On Windows, these are typically .lib files, but at runtime you'll need
@@ -20,7 +25,7 @@ fn main() {
 
     // If needed, add the directory where the .lib files live.
     // Update this path to match your CUDA version and install path:
-    println!("cargo:rustc-link-search=native={CUDA_LIB_DIR}");
+    println!("cargo:rustc-link-search=native={}", cuda_lib_dir.display());
 
     // --- 2. Use bindgen to generate Rust bindings ---
 
@@ -33,7 +38,7 @@ fn main() {
         .header("wrapper.h")
         // Ensure bindgen sees the same include path as the compiler would.
         //.clang_arg("-IC:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.8/include")
-        .clang_arg(format!("-I{CUDA_INCLUDE_DIR}"))
+        .clang_arg(format!("-I{}", cuda_include_dir.display()))
         // `parse_callbacks` tells bindgen to generate Cargo directives, so
         // it re-runs build scripts automatically when the wrapper or included
         // files change.
