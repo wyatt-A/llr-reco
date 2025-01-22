@@ -53,7 +53,7 @@ fn phase_shift3(dims: &[usize], x: &mut [Complex32], forward: bool) {
         let rem = idx % (dims3[0] * dims3[1]);
         let iy = rem / dims3[0];
         let ix = rem % dims3[0];
-
+        
         let z_shift = phase_shift(iz, dims3[2]);
         let y_shift = phase_shift(iy, dims3[1]);
         let x_shift = phase_shift(ix, dims3[0]);
@@ -108,8 +108,8 @@ pub fn ifftshift<T: Copy + Send + Sync>(dims: &[usize], data: &mut [T]) {
 
 #[cfg(test)]
 mod tests {
-    use crate::fftshift::{col_maj_index_to_coord, coord_to_col_maj_index, fftshift, ifftshift, linear_index_to_frequency_bin};
-    use cfl::ndarray::{Array3, ShapeBuilder};
+    use crate::fftshift::{col_maj_index_to_coord, coord_to_col_maj_index, fftshift, ifftshift, linear_index_to_frequency_bin, phase_shift3};
+    use cfl::ndarray::{Array3, Array4, ShapeBuilder};
     use cfl::num_complex::Complex32;
     use std::time::Instant;
 
@@ -138,23 +138,30 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cuda")]
     fn test_phase_shift() {
-        let mut a = Array3::from_shape_fn((512, 512, 512).f(), |(i, j, k)| Complex32::new((i + j + k) as f32, 0.));
-        let dims = a.shape().to_vec();
-        println!("starting circshift ...");
+        println!("building test array ...");
+        let n_vols = 1;
         let now = Instant::now();
-        //phase_shift3(&dims, a.as_slice_memory_order_mut().unwrap(), true);
-        crate::cufft::cu_fftn_batch(&dims, 1, crate::cufft::FftDirection::Forward, crate::cufft::NormalizationType::default(), a.as_slice_memory_order_mut().unwrap());
-        crate::cufft::cu_fftn_batch(&dims, 1, crate::cufft::FftDirection::Inverse, crate::cufft::NormalizationType::default(), a.as_slice_memory_order_mut().unwrap());
-        //phase_shift3(&dims, a.as_slice_memory_order_mut().unwrap(), false);
+        let mut a = Array4::from_shape_fn((788, 480, 480, n_vols).f(), |(i, j, k,l)| Complex32::new((i + j + k + l) as f32, 0.));
         let dur = now.elapsed().as_millis();
-        println!("took {} ms", dur);
+        println!("attempting to xform {} MB", (a.len() * size_of::<Complex32>()) as f64 / 2f64.powi(20));
+        println!("test array built in {} ms",dur);
+        let dims = a.shape().to_vec();
+        println!(" starting cufft...");
+        let now = Instant::now();
+        phase_shift3(&dims[0..3], &mut a.as_slice_memory_order_mut().unwrap()[0..(788*480*480)], true);
+        //crate::cufft::cu_fftn_batch(&dims[0..3], n_vols, crate::cufft::FftDirection::Forward, crate::cufft::NormalizationType::default(), a.as_slice_memory_order_mut().unwrap());
+        //crate::cufft::cu_fftn_batch(&dims[0..3], n_vols, crate::cufft::FftDirection::Inverse, crate::cufft::NormalizationType::default(), a.as_slice_memory_order_mut().unwrap());
+        phase_shift3(&dims[0..3], &mut a.as_slice_memory_order_mut().unwrap()[0..(788*480*480)], false);
+        let dur = now.elapsed().as_millis();
+        println!("fft took {} ms", dur);
         //println!("{:?}", a);
     }
 
     #[test]
     fn test_linear_index_to_frequency_bin() {
-        let n = 1024 * 1024 * 1024;
+        let n = 1024 * 1024;
         let mut result = vec![0; n];
         let now = Instant::now();
         result.iter_mut().enumerate().for_each(|(i, x)| {

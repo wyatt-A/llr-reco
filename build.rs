@@ -48,7 +48,7 @@ fn main() {
         .expect("Unable to generate cusolver bindings!");
 
     // Write the bindings to the $OUT_DIR/bindings.rs file (to be included in src).
-    bindings
-        .write_to_file(&out_path)
-        .expect("Couldn't write bindings!");
+    // bindings
+    //     .write_to_file(&out_path)
+    //     .expect("Couldn't write bindings!");
 }

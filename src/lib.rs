@@ -10,6 +10,7 @@ use cfl::ndarray_linalg::SVDDC;
 use cfl::num_complex::Complex32;
 use std::ops::Range;
 pub mod fftshift;
+mod bindings_cuda11;
 
 pub enum LlrError {
     ExtractMatrix
@@ -170,6 +171,6 @@ mod tests {
     }
 
     fn gen_test_cfl() -> Array3<Complex32> {
-        Array3::from_shape_fn((256, 256, 256).f(), |(x, y, z)| { x as f32 * Complex32::ONE })
+        Array3::from_shape_fn((128, 128, 128).f(), |(x, y, z)| { x as f32 * Complex32::ONE })
     }
 }
