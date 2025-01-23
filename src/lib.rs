@@ -10,7 +10,7 @@ use cfl::ndarray_linalg::SVDDC;
 use cfl::num_complex::Complex32;
 use std::ops::Range;
 pub mod fftshift;
-mod bindings_cuda11;
+mod svd;
 
 pub enum LlrError {
     ExtractMatrix

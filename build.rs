@@ -31,7 +31,8 @@ fn main() {
 
     // Where to place the generated bindings.
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("bindings.rs");
-
+    //println!("{:?}", out_path);
+    //panic!("stop!");
     // Configure bindgen
     let bindings = bindgen::Builder::default()
         // Tell bindgen which header(s) to parse.
@@ -42,13 +43,13 @@ fn main() {
         // `parse_callbacks` tells bindgen to generate Cargo directives, so
         // it re-runs build scripts automatically when the wrapper or included
         // files change.
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks))
+        //.parse_callbacks(Box::new(bindgen::CargoCallbacks))
         // Generate the actual bindings.
         .generate()
         .expect("Unable to generate cusolver bindings!");
 
     // Write the bindings to the $OUT_DIR/bindings.rs file (to be included in src).
-    // bindings
-    //     .write_to_file(&out_path)
-    //     .expect("Couldn't write bindings!");
+    bindings
+        .write_to_file(&out_path)
+        .expect("Couldn't write bindings!");
 }

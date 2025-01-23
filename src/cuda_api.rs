@@ -1,4 +1,4 @@
-use crate::bindings_cuda11::{cudaDeviceProp, cudaError_cudaSuccess, cudaFree, cudaGetDeviceCount, cudaGetDeviceProperties, cudaMalloc, cudaMemGetInfo, cudaMemcpy, cudaMemcpyKind_cudaMemcpyDeviceToHost, cudaMemcpyKind_cudaMemcpyHostToDevice,cudaSetDevice};
+use crate::bindings_cuda::{cudaDeviceProp, cudaError_cudaSuccess, cudaFree, cudaGetDeviceCount, cudaGetDeviceProperties, cudaMalloc, cudaMemGetInfo, cudaMemcpy, cudaMemcpyKind_cudaMemcpyDeviceToHost, cudaMemcpyKind_cudaMemcpyHostToDevice, cudaSetDevice};
 use std::ffi::{c_void, CStr};
 use std::os::raw::c_int;
 use std::ptr;
