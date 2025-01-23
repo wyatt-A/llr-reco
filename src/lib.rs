@@ -2,7 +2,9 @@
 pub mod cufft;
 #[cfg(feature = "cuda")]
 pub mod cuda_api;
+#[cfg(feature = "cuda")]
 mod bindings_cuda;
+
 use cfl;
 use cfl::ndarray::{Array2, Array3, ShapeBuilder};
 use cfl::ndarray_linalg::JobSvd;

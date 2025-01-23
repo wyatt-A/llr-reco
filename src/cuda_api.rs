@@ -60,7 +60,10 @@ pub fn copy_to_host<T: Sized>(data: &mut [T], device_pointer: *mut c_void) {
 
 pub fn cuda_free(device_pointer: *mut c_void) {
     unsafe {
-        cudaFree(device_pointer);
+        let stat = cudaFree(device_pointer);
+        if stat != cudaError_cudaSuccess {
+            panic!("cudaFree failed: {}", stat);
+        }
     }
 }
 
