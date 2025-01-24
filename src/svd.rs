@@ -156,7 +156,6 @@ mod tests {
         let mut u = Array2::from_elem((m, rank).f(), Complex32::ZERO);
         let mut vt = Array2::from_elem((rank, m).f(), Complex32::ZERO);
 
-
         cu_svd(
             m,
             n,
@@ -167,7 +166,6 @@ mod tests {
             s.as_slice_memory_order_mut().unwrap(),
             vt.as_slice_memory_order_mut().unwrap(),
         );
-
 
         println!("cuda singular values: {:?}", s);
     }

@@ -8,6 +8,7 @@ cfl = { git = "https://github.com/wyatt-A/cfl.git", features = ["linalg-mkl-stat
 
 [build-dependencies]
 bindgen = "0.71.1"
+cc = "1.2.10"
 
 [features]
 default = []
