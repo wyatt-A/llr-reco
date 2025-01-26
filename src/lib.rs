@@ -4,6 +4,8 @@ pub mod cufft;
 pub mod cuda_api;
 #[cfg(feature = "cuda")]
 mod bindings_cuda;
+#[cfg(feature = "cuda")]
+mod kernel_bindings;
 
 use cfl;
 use cfl::ndarray::{Array2, Array3, ShapeBuilder};
@@ -13,6 +15,7 @@ use cfl::num_complex::Complex32;
 use std::ops::Range;
 pub mod fftshift;
 mod svd;
+
 
 pub enum LlrError {
     ExtractMatrix

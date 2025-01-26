@@ -22,13 +22,16 @@ figure
 plot(abs(ks),'LineWidth',1)
 
 
+%%
 
+a = single(ones(20,10));
 
+[u,s,v] = svd(a);
+rank = 5;
+u = u(:,1:rank)
+s = s(1:rank,1:rank)
+v = v(:,1:rank)
 
+r = u * s * v'
 
-
-
-
-
-
-
+%r

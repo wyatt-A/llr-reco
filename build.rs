@@ -10,44 +10,30 @@ fn main() {
         return;
     }
 
+    println!("cargo:rerun-if-changed=src/cuda_kernels/kernels.cu");
+
     // resolve the location installed libraries
     let cuda_path = env::var("CUDA_PATH").expect("CUDA_PATH is not set");
     let cuda_lib_dir = Path::new(cuda_path.as_str()).join("lib").join("x64");
     let cuda_include_dir = Path::new(cuda_path.as_str()).join("include");
 
+    cc::Build::new()
+        .cuda(true) // Enable CUDA compilation
+        .include(&cuda_include_dir)
+        .file("src/cuda_kernels/kernels.cu")
+        .compile("host"); // Name of the output static library
+
     // cc::Build::new()
-    //     .cuda(true) // Enable CUDA compilation
+    //     .file("src/cuda_kernels/kernels.cu")
     //     .include("src/cuda_kernels")
-    //     .file("src/cuda_kernels/diag_mm_batched.cu") // Path to your CUDA file
-    //     .compile("libkernels"); // Name of the output static library
-    //
-    // cc::Build::new()
-    //     .file("src/cuda_kernels/diag_mm_batched_exec.c")
-    //     .include("src/cuda_kernels")
+    //     .include(&cuda_include_dir)
     //     .compile("libhost");
 
-    // let cuda_file =
-    //
-    // let status = Command::new("nvcc")
-    //     .args(&[
-    //         cuda_file,                  // The input CUDA file
-    //         "-lib",                     // Generate a static library
-    //         "-arch=sm_60",              // GPU architecture (adjust as needed)
-    //         "-std=c++17",               // Use the C++17 standard
-    //         "-o", &output_lib,          // Output static library path
-    //     ])
-    //     .status()
-    //     .expect("Failed to execute nvcc");
-
-    if !status.success() {
-        panic!("nvcc compilation failed!");
-    }
 
     // --- 1. Instruct Cargo to link against cusolver, cublas, cudart, etc. ---
     // On Windows, these are typically .lib files, but at runtime you'll need
     // the corresponding .dll to be in your PATH or alongside your executable.
-    println!("cargo:rustc-link-lib=static=kernels"); // Link the custom static CUDA library
-    println!("cargo:rustc-link-lib=static=host"); // Link the custom static host library
+    println!("cargo:rustc-link-lib=static=host"); // Link the custom static library
     println!("cargo:rustc-link-lib=dylib=cusolver");
     println!("cargo:rustc-link-lib=dylib=cublas");
     println!("cargo:rustc-link-lib=dylib=cudart");

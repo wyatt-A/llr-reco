@@ -1,23 +1,82 @@
-use crate::bindings_cuda::{cudaDeviceProp, cudaError_cudaSuccess, cudaFree, cudaGetDeviceCount, cudaGetDeviceProperties, cudaMalloc, cudaMemGetInfo, cudaMemcpy, cudaMemcpyKind_cudaMemcpyDeviceToHost, cudaMemcpyKind_cudaMemcpyHostToDevice, cudaSetDevice};
+use crate::bindings_cuda::{cudaDeviceProp, cudaError_cudaSuccess, cudaFree, cudaGetDeviceCount, cudaGetDeviceProperties, cudaMalloc, cudaMemGetInfo, cudaMemcpy, cudaMemcpyKind_cudaMemcpyDeviceToHost, cudaMemcpyKind_cudaMemcpyHostToDevice, cudaMemset, cudaSetDevice};
 use std::ffi::{c_void, CStr};
 use std::os::raw::c_int;
 use std::ptr;
 
-// allocates memory on device and copies data, returning pointer to device memory
-pub fn copy_to_device<T: Sized>(data: &[T]) -> *mut c_void {
-    let data_bytes = data.len() * size_of::<T>();
+/// Allocates memory for some number of elements of a specified type, setting all entries to 0.
+/// Panics if calls to cudaMalloc or cudaMemset fail
+pub fn cuda_malloc_memset<T: Sized>(n_elements: usize) -> *mut c_void {
+    // total number of bytes to request
+    let data_bytes = n_elements * size_of::<T>();
+    // null pointer to data
     let mut device_pointer: *mut c_void = ptr::null_mut();
+
+    // check if we are exceeding available memory ...
+    // some mem allocations may still work even if there is not enough free mem, especially with
+    // modern device drivers. We will warn the user anyway...
+    let (free_mem, _) = get_device_memory_info();
+    if free_mem < data_bytes {
+        println!(
+            "WARNING!: requested allocation ({:.3e} bytes) exceeds free device memory ({:.3e} bytes)",
+            data_bytes as f64, free_mem as f64);
+    }
+
+    // call to memory request
     let cuda_status = unsafe {
         cudaMalloc(&mut device_pointer as *mut *mut c_void, data_bytes)
     };
+
+    // crash the program if the allocation is unsuccessful
     if cuda_status != cudaError_cudaSuccess {
         unsafe { cudaFree(device_pointer); }
-        panic!("cudaMalloc failed");
+        panic!("cudaMalloc failed with error code: {cuda_status}");
     }
 
-    let host_pointer = data.as_ptr() as *const c_void;
+    let cuda_status = unsafe {
+        cudaMemset(device_pointer, 0, data_bytes)
+    };
 
-    // copy data to device
+    // crash the program if memset was unsuccessful
+    if cuda_status != cudaError_cudaSuccess {
+        unsafe { cudaFree(device_pointer); }
+        panic!("cudaMemset failed with error code: {cuda_status}");
+    }
+
+    device_pointer
+}
+
+
+/// Allocates memory on device and copies data, returning raw pointer to device memory. It is up to the user to properly cast the pointer when using it.
+pub fn copy_to_device<T: Sized>(data: &[T]) -> *mut c_void {
+
+    // total number of bytes to request
+    let data_bytes = data.len() * size_of::<T>();
+    // null pointer to data
+    let mut device_pointer: *mut c_void = ptr::null_mut();
+
+    // check if we are exceeding available memory ...
+    // some mem allocations may still work even if there is not enough free mem, especially with
+    // modern device drivers. We will warn the user anyway...
+    let (free_mem, _) = get_device_memory_info();
+    if free_mem < data_bytes {
+        println!(
+            "WARNING!: requested allocation ({:.3e} bytes) exceeds free device memory ({:.3e} bytes)",
+            data_bytes as f64, free_mem as f64);
+    }
+
+    // call to memory request
+    let cuda_status = unsafe {
+        cudaMalloc(&mut device_pointer as *mut *mut c_void, data_bytes)
+    };
+
+    // crash the program if the allocation is unsuccessful
+    if cuda_status != cudaError_cudaSuccess {
+        unsafe { cudaFree(device_pointer); }
+        panic!("cudaMalloc failed with error code: {cuda_status}");
+    }
+
+    // copy data from host to device
+    let host_pointer = data.as_ptr() as *const c_void;
     let cuda_status = unsafe {
         cudaMemcpy(
             device_pointer,
@@ -27,23 +86,29 @@ pub fn copy_to_device<T: Sized>(data: &[T]) -> *mut c_void {
         )
     };
 
+    // crash if memory copy is unsuccessful
     if cuda_status != cudaError_cudaSuccess {
         unsafe { cudaFree(device_pointer); }
-        panic!("cudaMemcpy failed");
+        panic!("cudaMemcpy failed with error code: {cuda_status}");
     }
 
+    // return the raw pointer to device memory. It is up to the user to properly
+    // cast this pointer to the actual type when used
     device_pointer
 }
 
-// copies data from device to host based on the size of data. This will panic if the device pointer
-// is null or if there is a mem overrun
+/// Copy data from the device back to the host. It is up to the user to ensure that the device
+/// pointer has the correct type and memory allocated to it based on the data slice. This function
+/// will panic if the device pointer is invalid (NULL) or if the cudaMemcpy call fails
 pub fn copy_to_host<T: Sized>(data: &mut [T], device_pointer: *mut c_void) {
     if device_pointer.is_null() {
         panic!("device pointer must not be null");
     }
+    // get data size from slice len and type
     let data_bytes = data.len() * size_of::<T>();
     let host_pointer = data.as_mut_ptr() as *mut c_void;
 
+    // cudaMemcpy call
     let cuda_status = unsafe {
         cudaMemcpy(
             host_pointer,
@@ -52,13 +117,17 @@ pub fn copy_to_host<T: Sized>(data: &mut [T], device_pointer: *mut c_void) {
             cudaMemcpyKind_cudaMemcpyDeviceToHost,
         )
     };
-
+    // crash if unsuccessful
     if cuda_status != cudaError_cudaSuccess {
-        panic!("cudaMemcpy failed");
+        panic!("cudaMemcpy failed with error code: {cuda_status}");
     }
 }
 
+/// Free device memory. Panics if device pointer is invalid or cudaFree returns an error.
 pub fn cuda_free(device_pointer: *mut c_void) {
+    if device_pointer.is_null() {
+        panic!("device pointer must not be null");
+    }
     unsafe {
         let stat = cudaFree(device_pointer);
         if stat != cudaError_cudaSuccess {
@@ -67,6 +136,7 @@ pub fn cuda_free(device_pointer: *mut c_void) {
     }
 }
 
+/// Get the number of devices available from the host. Panics if cudaGetDeviceCount fails.
 pub fn get_device_count() -> usize {
     unsafe {
         // 1. Get the number of GPU devices
@@ -121,6 +191,7 @@ pub fn get_device_memory_info() -> (usize, usize) {
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 mod tests {
     use super::*;
     use cfl::ndarray::{Array2, ShapeBuilder};
