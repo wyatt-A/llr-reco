@@ -12,13 +12,13 @@ use std::time::Instant;
 /// Memory layout is assumed to be column-major.
 /// The decomposition performed is
 ///
-/// A = U * S * V^H
+/// A = U * S * V
 ///
 /// with only the first rank r singular values and right/left singular vectors calculated:
 ///
-/// (m x n) = (m x rank) * (rank x rank) * (rank x n)
+/// (m x n) = (m x rank) * (rank x rank) * (n x rank)^H
 ///
-/// U has size (m x r x batch_size), S is diagonal and has size (r x batch_size), V^H has size (r x n x batch_size)
+/// U has size (m x r x batch_size), S is diagonal and has size (r x batch_size), V has size (n x r x batch_size)
 /// all arrays are assumed to be already on-device and have a column-major layout
 fn cu_svd_exec(
     m: usize,

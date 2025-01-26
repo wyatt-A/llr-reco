@@ -1,6 +1,5 @@
 use crate::bindings_cuda::{cuComplex, cudaError_t};
 use std::ffi::c_int;
-use std::os::raw::c_longlong;
 
 extern "C" {
     /*
@@ -12,7 +11,7 @@ extern "C" {
         occur
     */
     fn diag_mm_batched_exec(m: c_int, n: c_int, batch_size: c_int, d_matrix: *mut cuComplex, d_diag: *mut f32) -> cudaError_t;
-    fn replace_nan_with_zero_exec(n: c_longlong, data: *mut cuComplex) -> cudaError_t;
+    //fn replace_nan_with_zero_exec(n: c_longlong, data: *mut cuComplex) -> cudaError_t;
 }
 
 
@@ -25,14 +24,14 @@ pub fn diag_mm_batched(m: usize, n: usize, batch_size: usize, d_matrix: *mut cuC
     }
 }
 
-pub fn replace_nan_with_zero(n: usize, d_data: *mut cuComplex) {
-    let stat = unsafe {
-        replace_nan_with_zero_exec(n as c_longlong, d_data)
-    };
-    if stat != 0 {
-        panic!("diag_mm_batched_exec returned an error: {}", stat);
-    }
-}
+// pub fn replace_nan_with_zero(n: usize, d_data: *mut cuComplex) {
+//     let stat = unsafe {
+//         replace_nan_with_zero_exec(n as c_longlong, d_data)
+//     };
+//     if stat != 0 {
+//         panic!("diag_mm_batched_exec returned an error: {}", stat);
+//     }
+// }
 
 #[cfg(test)]
 mod tests {

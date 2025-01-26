@@ -42,23 +42,23 @@ __global__ void diag_mm_batched(int m, int n, int batch_size, cuComplex* d_matri
     }
 }
 
-/*
-Kernel to set complex values to 0 if either the real or imaginary part is NAN
-*/
-__global__ void replace_nan_with_zero(long long n, cuComplex* data)
-{
-    long long idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < n) {
-        cuComplex val = data[idx];
-
-        // If either the real or imaginary part is NaN, zero the entire complex value.
-        if (isnan(val.x) || isnan(val.y)) {
-            val.x = 0.0f;
-            val.y = 0.0f;
-            data[idx] = val;
-        }
-    }
-}
+// /*
+// Kernel to set complex values to 0 if either the real or imaginary part is NAN
+// */
+// __global__ void replace_nan_with_zero(long long n, cuComplex* data)
+// {
+//     long long idx = blockIdx.x * blockDim.x + threadIdx.x;
+//     if (idx < n) {
+//         cuComplex val = data[idx];
+//
+//         // If either the real or imaginary part is NaN, zero the entire complex value.
+//         if (isnan(val.x) || isnan(val.y)) {
+//             val.x = 0.0f;
+//             val.y = 0.0f;
+//             data[idx] = val;
+//         }
+//     }
+// }
 
 // expose encapsulated functions without name-mangling
 extern "C" {
@@ -84,16 +84,16 @@ extern "C" {
         return status;
     }
 
-    // host function to configure kernel launch
-    cudaError_t replace_nan_with_zero_exec(long long n, cuComplex* data) {
-        long long threads_per_block = 1024;
-        long long grid_dim = (n + threads_per_block - 1) / threads_per_block;
-        replace_nan_with_zero<<<grid_dim, threads_per_block>>>(n, data);
-        // ensure all device operations are complete
-        cudaDeviceSynchronize();
-        cudaError_t status = cudaGetLastError();
-        // return the status
-        return status;
-    }
+//     // host function to configure kernel launch
+//     cudaError_t replace_nan_with_zero_exec(long long n, cuComplex* data) {
+//         long long threads_per_block = 1024;
+//         long long grid_dim = (n + threads_per_block - 1) / threads_per_block;
+//         replace_nan_with_zero<<<grid_dim, threads_per_block>>>(n, data);
+//         // ensure all device operations are complete
+//         cudaDeviceSynchronize();
+//         cudaError_t status = cudaGetLastError();
+//         // return the status
+//         return status;
+//     }
 
 }
