@@ -1,71 +1,55 @@
-// build.rs
 use cc;
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-//const CUDA_LIB_DIR: &str = "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\lib\\x64";
-//const CUDA_INCLUDE_DIR: &str = "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.6\\include";
+const GENERATE_BINDINGS: bool = false;
+const BINDINGS_PATH: &str = "src/cuda/tmp_bindings_cuda.rs";
+
 fn main() {
     if env::var_os("CARGO_FEATURE_CUDA").is_none() {
         return;
     }
 
-    println!("cargo:rerun-if-changed=src/cuda_kernels/kernels.cu");
+    // re-run if any changes are made to the kernel code
+    println!("cargo:rerun-if-changed=src/cuda/kernels.cu");
 
-    // resolve the location installed libraries
+    // resolve the location of installed cuda libraries
     let cuda_path = env::var("CUDA_PATH").expect("CUDA_PATH is not set");
     let cuda_lib_dir = Path::new(cuda_path.as_str()).join("lib").join("x64");
     let cuda_include_dir = Path::new(cuda_path.as_str()).join("include");
 
+    // add cuda libraries to search path
+    println!("cargo:rustc-link-search=native={}", cuda_lib_dir.display());
+
+    // build the custom cuda kernels and write to host library
     cc::Build::new()
         .cuda(true) // Enable CUDA compilation
         .include(&cuda_include_dir)
-        .file("src/cuda_kernels/kernels.cu")
+        .file("src/cuda/kernels.cu")
         .compile("host"); // Name of the output static library
 
-    // cc::Build::new()
-    //     .file("src/cuda_kernels/kernels.cu")
-    //     .include("src/cuda_kernels")
-    //     .include(&cuda_include_dir)
-    //     .compile("libhost");
+    // link against custom generated library file
+    println!("cargo:rustc-link-lib=static=host");
 
-
-    // --- 1. Instruct Cargo to link against cusolver, cublas, cudart, etc. ---
-    // On Windows, these are typically .lib files, but at runtime you'll need
-    // the corresponding .dll to be in your PATH or alongside your executable.
-    println!("cargo:rustc-link-lib=static=host"); // Link the custom static library
+    // link against cuda libraries
     println!("cargo:rustc-link-lib=dylib=cusolver");
     println!("cargo:rustc-link-lib=dylib=cublas");
     println!("cargo:rustc-link-lib=dylib=cudart");
     println!("cargo:rustc-link-lib=dylib=cufft");
 
-    // If needed, add the directory where the .lib files live.
-    // Update this path to match your CUDA version and install path:
-    println!("cargo:rustc-link-search=native={}", cuda_lib_dir.display());
+    if GENERATE_BINDINGS == true {
+        //let out_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("bindings.rs");
+        let bindings_file = Path::new(BINDINGS_PATH);
 
-    // --- 2. Use bindgen to generate Rust bindings ---
+        let bindings = bindgen::Builder::default()
+            .header("src/cuda/cuda_includes.h")
+            .clang_arg(format!("-I{}", cuda_include_dir.display()))
+            .generate()
+            .expect("Unable to generate cuda bindings!");
 
-    // Where to place the generated bindings.
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("bindings.rs");
-    //println!("{:?}", out_path);
-    //panic!("stop!");
-    // Configure bindgen
-    let bindings = bindgen::Builder::default()
-        // Tell bindgen which header(s) to parse.
-        .header("wrapper.h")
-        // Ensure bindgen sees the same include path as the compiler would.
-        //.clang_arg("-IC:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.8/include")
-        .clang_arg(format!("-I{}", cuda_include_dir.display()))
-        // `parse_callbacks` tells bindgen to generate Cargo directives, so
-        // it re-runs build scripts automatically when the wrapper or included
-        // files change.
-        //.parse_callbacks(Box::new(bindgen::CargoCallbacks))
-        // Generate the actual bindings.
-        .generate()
-        .expect("Unable to generate cusolver bindings!");
-
-    // Write the bindings to the $OUT_DIR/bindings.rs file (to be included in src).
-    bindings
-        .write_to_file(&out_path)
-        .expect("Couldn't write bindings!");
+        // Write the bindings to the $OUT_DIR/bindings.rs file (to be included in src).
+        bindings
+            .write_to_file(bindings_file)
+            .expect("Couldn't write bindings!");
+    }
 }

@@ -1,4 +1,4 @@
-use crate::bindings_cuda::{cudaDeviceProp, cudaError_cudaSuccess, cudaFree, cudaGetDeviceCount, cudaGetDeviceProperties, cudaMalloc, cudaMemGetInfo, cudaMemcpy, cudaMemcpyKind_cudaMemcpyDeviceToHost, cudaMemcpyKind_cudaMemcpyHostToDevice, cudaMemset, cudaSetDevice};
+use crate::cuda::bindings::{cudaDeviceProp, cudaError_cudaSuccess, cudaFree, cudaGetDeviceCount, cudaGetDeviceProperties_v2, cudaMalloc, cudaMemGetInfo, cudaMemcpy, cudaMemcpyKind_cudaMemcpyDeviceToHost, cudaMemcpyKind_cudaMemcpyHostToDevice, cudaMemset, cudaSetDevice};
 use std::ffi::{c_void, CStr};
 use std::os::raw::c_int;
 use std::ptr;
@@ -154,7 +154,7 @@ pub fn get_device_name(device_index: usize) -> String {
     let idx = device_index as c_int;
     let mut props = std::mem::MaybeUninit::<cudaDeviceProp>::uninit();
     // Call cudaGetDeviceProperties(...).
-    let err = unsafe { cudaGetDeviceProperties(props.as_mut_ptr(), idx) };
+    let err = unsafe { cudaGetDeviceProperties_v2(props.as_mut_ptr(), idx) };
     if err != cudaError_cudaSuccess {
         panic!("cudaGetDeviceProperties_v2 failed with error code {}", err);
     }

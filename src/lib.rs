@@ -1,11 +1,12 @@
 #[cfg(feature = "cuda")]
-pub mod cufft;
-#[cfg(feature = "cuda")]
-pub mod cuda_api;
-#[cfg(feature = "cuda")]
-mod bindings_cuda;
-#[cfg(feature = "cuda")]
-mod kernel_bindings;
+mod cuda {
+    mod bindings;
+    mod cufft;
+    mod cuda_api;
+    mod cublas;
+    mod cusolver;
+    mod low_rank;
+}
 
 use cfl;
 use cfl::ndarray::{Array2, ShapeBuilder};
@@ -13,8 +14,7 @@ use cfl::ndarray_linalg::JobSvd;
 use cfl::ndarray_linalg::SVDDC;
 use cfl::num_complex::Complex32;
 pub mod fftshift;
-#[cfg(feature = "cuda")]
-mod svd;
+
 mod block;
 
 pub enum LlrError {

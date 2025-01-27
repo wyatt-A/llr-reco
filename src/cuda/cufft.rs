@@ -1,5 +1,5 @@
-use crate::bindings_cuda::{cuComplex, cublasCreate_v2, cublasCscal_v2, cublasDestroy_v2, cublasHandle_t, cublasStatus_t_CUBLAS_STATUS_SUCCESS, cufftComplex, cufftDestroy, cufftExecC2C, cufftHandle, cufftPlan3d, cufftPlanMany, cufftResult_t_CUFFT_SUCCESS, cufftType_t_CUFFT_C2C, CUFFT_FORWARD, CUFFT_INVERSE};
-use crate::cuda_api::{copy_to_device, copy_to_host, cuda_free};
+use crate::cuda::bindings::{cuComplex, cublasCreate_v2, cublasCscal_v2, cublasDestroy_v2, cublasHandle_t, cublasStatus_t_CUBLAS_STATUS_SUCCESS, cufftComplex, cufftDestroy, cufftExecC2C, cufftHandle, cufftPlan3d, cufftPlanMany, cufftResult_t_CUFFT_SUCCESS, cufftType_t_CUFFT_C2C, CUFFT_FORWARD, CUFFT_INVERSE};
+use crate::cuda::cuda_api::{copy_to_device, copy_to_host, cuda_free};
 use cfl::ndarray::parallel::prelude::{IntoParallelRefMutIterator, ParallelIterator};
 use cfl::ndarray::Array3;
 use cfl::num_complex::Complex32;
