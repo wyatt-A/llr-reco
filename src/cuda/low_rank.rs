@@ -7,14 +7,16 @@ use cfl::ndarray::{Array2, ShapeBuilder};
 use cfl::num_complex::Complex32;
 use std::time::Instant;
 
-fn cu_low_rank_approx_batch(m: usize, n: usize, rank: usize, batch_size: usize, matrix_data: &mut [Complex32]) {
-    assert_eq!(m * n * batch_size, matrix_data.len(), "incorrect number of elements for matrix data");
+pub fn cu_low_rank_approx_batch(m: usize, n: usize, rank: usize, batch_size: usize, matrix_data: &mut [Complex32]) {
+    //assert_eq!(m * n * batch_size, matrix_data.len(), "incorrect number of elements for matrix data");
+    assert!(matrix_data.len() >= m * n * batch_size, "matrix data buffer is too small");
+    let matrix_data = &mut matrix_data[0..(m * n * batch_size)];
 
     let now = Instant::now();
     // copy matrix data to gpu
     let d_a = copy_to_device(matrix_data);
     let dur = now.elapsed();
-    println!("data copy took {} ms", dur.as_millis());
+    //println!("data copy took {} ms", dur.as_millis());
 
     let now = Instant::now();
     // allocate temp device arrays for svd calculation
@@ -22,7 +24,7 @@ fn cu_low_rank_approx_batch(m: usize, n: usize, rank: usize, batch_size: usize, 
     let d_s = cuda_malloc_memset::<f32>(rank * batch_size);
     let d_v = cuda_malloc_memset::<Complex32>(rank * n * batch_size);
     let dur = now.elapsed();
-    println!("temp alloc took {} ms", dur.as_millis());
+    //println!("temp alloc took {} ms", dur.as_millis());
 
     let now = Instant::now();
     // perform svd
@@ -37,14 +39,14 @@ fn cu_low_rank_approx_batch(m: usize, n: usize, rank: usize, batch_size: usize, 
         d_v as *mut cuComplex,
     );
     let dur = now.elapsed();
-    println!("svd took {} ms", dur.as_millis());
+    //println!("svd took {} ms", dur.as_millis());
 
     let now = Instant::now();
     // reconstruct U * S
     rhs_cdgmm_batched_device(m, rank, batch_size, d_u as *mut cuComplex, d_s as *mut f32)
         .expect("batched diag matrix multiply failed");
     let dur = now.elapsed();
-    println!("diag mul took {} ms", dur.as_millis());
+    //println!("diag mul took {} ms", dur.as_millis());
 
     let alpha = Complex32::ONE;
     let beta = Complex32::ZERO;
@@ -53,12 +55,12 @@ fn cu_low_rank_approx_batch(m: usize, n: usize, rank: usize, batch_size: usize, 
     cublas_cgemm_strided_batched_device(m, rank, n, batch_size, alpha, beta, false, true, d_u as *mut cuComplex, d_v as *mut cuComplex, d_a as *mut cuComplex)
         .expect("cublas matrix multiply failed");
     let dur = now.elapsed();
-    println!("mat mul took {} ms", dur.as_millis());
+    //println!("mat mul took {} ms", dur.as_millis());
 
     let now = Instant::now();
     copy_to_host(matrix_data, d_a);
     let dur = now.elapsed();
-    println!("data copy to host took {} ms", dur.as_millis());
+    //println!("data copy to host took {} ms", dur.as_millis());
 
     cuda_free(d_a);
     cuda_free(d_u);

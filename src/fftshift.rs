@@ -4,6 +4,12 @@ use cfl::ndarray::parallel::prelude::{IntoParallelIterator, IntoParallelRefMutIt
 use cfl::num_complex::Complex32;
 use std::f32::consts::PI;
 
+/// specifies the direction of the pi phase shift. This has the same convention as the DFT
+pub enum PhaseShiftDir {
+    Forward,
+    Inverse,
+}
+
 fn coord_to_col_maj_index(coords: &[i32], dims: &[usize]) -> usize {
     assert_eq!(coords.len(), dims.len(), "coordinate length and number of dimensions disagree");
     let mut idx = 0;
@@ -39,21 +45,25 @@ fn phase_shift(index: usize, n: usize) -> f32 {
     PI * (index as f32 - (n as f32 / 2.))
 }
 
-fn phase_shift3(dims: &[usize], x: &mut [Complex32], forward: bool) {
+/// performs a phase shift on a 3-D volume of complex-values for use in centered fft
+pub fn phase_shift3(dims: &[usize], x: &mut [Complex32], direction: PhaseShiftDir) {
     assert!(dims.len() <= 3, "only dims up to 3 are supported");
     assert_eq!(dims.iter().product::<usize>(), x.len(), "dims must agree with the size of x");
 
     let mut dims3 = [1; 3];
     dims3.iter_mut().zip(dims.iter()).for_each(|(d, i)| *d = *i);
 
-    let sign = if forward { -1. } else { 1. };
+    let sign = match direction {
+        PhaseShiftDir::Forward => -1.,
+        PhaseShiftDir::Inverse => 1.
+    };
 
     x.par_iter_mut().enumerate().for_each(|(idx, value)| {
         let iz = idx / (dims3[0] * dims3[1]);
         let rem = idx % (dims3[0] * dims3[1]);
         let iy = rem / dims3[0];
         let ix = rem % dims3[0];
-        
+
         let z_shift = phase_shift(iz, dims3[2]);
         let y_shift = phase_shift(iy, dims3[1]);
         let x_shift = phase_shift(ix, dims3[0]);
@@ -108,7 +118,7 @@ pub fn ifftshift<T: Copy + Send + Sync>(dims: &[usize], data: &mut [T]) {
 
 #[cfg(test)]
 mod tests {
-    use crate::fftshift::{col_maj_index_to_coord, coord_to_col_maj_index, fftshift, ifftshift, linear_index_to_frequency_bin, phase_shift3};
+    use crate::fftshift::{col_maj_index_to_coord, coord_to_col_maj_index, fftshift, ifftshift, linear_index_to_frequency_bin, phase_shift3, PhaseShiftDir};
     use cfl::ndarray::{Array3, Array4, ShapeBuilder};
     use cfl::num_complex::Complex32;
     use std::time::Instant;
@@ -143,17 +153,17 @@ mod tests {
         println!("building test array ...");
         let n_vols = 1;
         let now = Instant::now();
-        let mut a = Array4::from_shape_fn((788, 480, 480, n_vols).f(), |(i, j, k,l)| Complex32::new((i + j + k + l) as f32, 0.));
+        let mut a = Array4::from_shape_fn((788, 480, 480, n_vols).f(), |(i, j, k, l)| Complex32::new((i + j + k + l) as f32, 0.));
         let dur = now.elapsed().as_millis();
         println!("attempting to xform {} MB", (a.len() * size_of::<Complex32>()) as f64 / 2f64.powi(20));
-        println!("test array built in {} ms",dur);
+        println!("test array built in {} ms", dur);
         let dims = a.shape().to_vec();
         println!(" starting cufft...");
         let now = Instant::now();
-        phase_shift3(&dims[0..3], &mut a.as_slice_memory_order_mut().unwrap()[0..(788*480*480)], true);
+        phase_shift3(&dims[0..3], &mut a.as_slice_memory_order_mut().unwrap()[0..(788 * 480 * 480)], PhaseShiftDir::Forward);
         //crate::cufft::cu_fftn_batch(&dims[0..3], n_vols, crate::cufft::FftDirection::Forward, crate::cufft::NormalizationType::default(), a.as_slice_memory_order_mut().unwrap());
         //crate::cufft::cu_fftn_batch(&dims[0..3], n_vols, crate::cufft::FftDirection::Inverse, crate::cufft::NormalizationType::default(), a.as_slice_memory_order_mut().unwrap());
-        phase_shift3(&dims[0..3], &mut a.as_slice_memory_order_mut().unwrap()[0..(788*480*480)], false);
+        phase_shift3(&dims[0..3], &mut a.as_slice_memory_order_mut().unwrap()[0..(788 * 480 * 480)], PhaseShiftDir::Inverse);
         let dur = now.elapsed().as_millis();
         println!("fft took {} ms", dur);
         //println!("{:?}", a);

@@ -1,11 +1,11 @@
 #[cfg(feature = "cuda")]
-mod cuda {
+pub mod cuda {
     mod bindings;
-    mod cufft;
+    pub mod cufft;
     mod cuda_api;
     mod cublas;
     mod cusolver;
-    mod low_rank;
+    pub mod low_rank;
 }
 
 use cfl;
@@ -15,7 +15,7 @@ use cfl::ndarray_linalg::SVDDC;
 use cfl::num_complex::Complex32;
 pub mod fftshift;
 
-mod block;
+pub mod block;
 
 pub enum LlrError {
     ExtractMatrix

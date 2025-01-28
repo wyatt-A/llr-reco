@@ -1,18 +1,15 @@
 use crate::cuda::bindings::{cuComplex, cublasCreate_v2, cublasCscal_v2, cublasDestroy_v2, cublasHandle_t, cublasStatus_t_CUBLAS_STATUS_SUCCESS, cufftComplex, cufftDestroy, cufftExecC2C, cufftHandle, cufftPlan3d, cufftPlanMany, cufftResult_t_CUFFT_SUCCESS, cufftType_t_CUFFT_C2C, CUFFT_FORWARD, CUFFT_INVERSE};
 use crate::cuda::cuda_api::{copy_to_device, copy_to_host, cuda_free};
-use cfl::ndarray::parallel::prelude::{IntoParallelRefMutIterator, ParallelIterator};
-use cfl::ndarray::Array3;
+use cfl::ndarray::parallel::prelude::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
+use cfl::ndarray::{s, Array3, Array4, ArrayViewMut, Dim};
 use cfl::num_complex::Complex32;
+use rayon::slice::ParallelSliceMut;
+use std::f32::consts::PI;
 use std::ffi::c_int;
 use std::ptr::null_mut;
 
-// I need to investigate the use of cuTensor to perform centered fft optimally
-// the initial plan is to store the pre-computed phase values in an array on the
-// device and use cuTensor elementwise multiplication to perform the shifting
-// instead of reordering the data for improved cache friendliness
-
-
-pub(crate) enum FftDirection {
+#[derive(Debug, Clone, Copy)]
+pub enum FftDirection {
     Forward,
     Inverse,
 }
@@ -260,15 +257,110 @@ fn cu_fft3(x: &mut Array3<Complex32>, fft_dir: FftDirection) {
     }
 }
 
+/// performs a phase shift on a 3-D volume of complex-values for use in centered fft
+pub fn phase_shift3(dims: &[usize], x: &mut [Complex32], direction: FftDirection) {
+    assert!(dims.len() <= 3, "only dims up to 3 are supported");
+    assert_eq!(dims.iter().product::<usize>(), x.len(), "dims must agree with the size of x");
 
-fn ceil_div(a: usize, b: usize) -> usize {
-    (a + b - 1) / b
+    let mut dims3 = [1; 3];
+    dims3.iter_mut().zip(dims.iter()).for_each(|(d, i)| *d = *i);
+
+    let sign = match direction {
+        FftDirection::Forward => -1.,
+        FftDirection::Inverse => 1.
+    };
+
+    x.par_iter_mut().enumerate().for_each(|(idx, value)| {
+        let iz = idx / (dims3[0] * dims3[1]);
+        let rem = idx % (dims3[0] * dims3[1]);
+        let iy = rem / dims3[0];
+        let ix = rem % dims3[0];
+
+        let z_shift = phase_shift(iz, dims3[2]);
+        let y_shift = phase_shift(iy, dims3[1]);
+        let x_shift = phase_shift(ix, dims3[0]);
+        let total_shift = sign * (x_shift + y_shift + z_shift);
+
+        *value = *value * Complex32::from_polar(1., total_shift);
+    });
+}
+
+#[inline]
+/// returns the phase shift associated with the centered fft
+fn phase_shift(index: usize, n: usize) -> f32 {
+    assert!(index < n, "index out of range");
+    PI * (index as f32 - (n as f32 / 2.))
+}
+
+/// unitary forward centered fast fourier transform for CUDA devices
+pub fn fft3c(x: &mut Array3<Complex32>) {
+    let dims: [usize; 3] = x.dim().into();
+    phase_shift3(&dims, x.as_slice_memory_order_mut().unwrap(), FftDirection::Inverse);
+    cu_fftn_batch(&dims, 1, FftDirection::Forward, NormalizationType::Unitary, x.as_slice_memory_order_mut().unwrap());
+    phase_shift3(&dims, x.as_slice_memory_order_mut().unwrap(), FftDirection::Forward);
+}
+
+/// unitary inverse centered fast fourier transform for CUDA devices
+pub fn ifft3c(x: &mut Array3<Complex32>) {
+    let dims: [usize; 3] = x.dim().into();
+    phase_shift3(&dims, x.as_slice_memory_order_mut().unwrap(), FftDirection::Inverse);
+    cu_fftn_batch(&dims, 1, FftDirection::Inverse, NormalizationType::Unitary, x.as_slice_memory_order_mut().unwrap());
+    phase_shift3(&dims, x.as_slice_memory_order_mut().unwrap(), FftDirection::Forward);
+}
+
+fn _fft3c_batched(x: &mut Array4<Complex32>, direction: FftDirection) {
+    let dims: [usize; 4] = x.dim().into();
+    let batch_size = *dims.last().unwrap();
+    let vol_dims = &dims[0..3];
+    let vol_stride: usize = vol_dims.iter().product();
+    let data = x.as_slice_memory_order_mut().unwrap();
+    data.par_chunks_exact_mut(vol_stride).for_each(|vol| {
+        phase_shift3(vol_dims, vol, FftDirection::Inverse);
+    });
+    cu_fftn_batch(&vol_dims, batch_size, direction, NormalizationType::Unitary, data);
+    data.par_chunks_exact_mut(vol_stride).for_each(|vol| {
+        phase_shift3(vol_dims, vol, FftDirection::Forward);
+    });
+}
+
+fn fft3c_batched_view(x: &mut ArrayViewMut<Complex32, Dim<[usize; 4]>>, direction: FftDirection) {
+    let dims: [usize; 4] = x.dim().into();
+    let batch_size = *dims.last().unwrap();
+    let vol_dims = &dims[0..3];
+    let vol_stride: usize = vol_dims.iter().product();
+    let data = x.as_slice_memory_order_mut().unwrap();
+    data.par_chunks_exact_mut(vol_stride).for_each(|vol| {
+        phase_shift3(vol_dims, vol, FftDirection::Inverse);
+    });
+    cu_fftn_batch(&vol_dims, batch_size, direction, NormalizationType::Unitary, data);
+    data.par_chunks_exact_mut(vol_stride).for_each(|vol| {
+        phase_shift3(vol_dims, vol, FftDirection::Forward);
+    });
+}
+
+pub fn fft3c_chunked(x: &mut Array4<Complex32>, vols_per_batch: usize) {
+    _fft3c_chunked(x, FftDirection::Forward, vols_per_batch);
+}
+
+pub fn ifft3c_chunked(x: &mut Array4<Complex32>, vols_per_batch: usize) {
+    _fft3c_chunked(x, FftDirection::Inverse, vols_per_batch);
+}
+
+fn _fft3c_chunked(x: &mut Array4<Complex32>, dir: FftDirection, vols_per_batch: usize) {
+    let dims: [usize; 4] = x.dim().into();
+    let n_vols = dims[3];
+    (0..n_vols).collect::<Vec<usize>>().chunks(vols_per_batch).for_each(|chunk| {
+        let index_start = *chunk.first().unwrap();
+        let index_end = *chunk.last().unwrap();
+        let mut v = x.slice_mut(s![..,..,..,index_start..=index_end]);
+        fft3c_batched_view(&mut v, dir);
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cfl::ndarray::ShapeBuilder;
+    use cfl::ndarray::{stack, Axis, Ix3, ShapeBuilder};
     use cfl::ndarray_linalg::Scalar;
     use cfl::ndarray_stats::QuantileExt;
     use cfl::to_array;
@@ -323,5 +415,50 @@ mod tests {
         let dur = now.elapsed().as_millis();
         println!("{:?}", (x - y).map(|x| x.abs()).max());
         println!("both ffts took {dur} ms");
+    }
+
+    #[test]
+    fn test_fft3_shepp() {
+        println!("loading test data ...");
+        let mut ksp = to_array("shepp_512", true).unwrap().into_dimensionality::<Ix3>().unwrap();
+        let orig = ksp.clone();
+        let now = Instant::now();
+        ifft3c(&mut ksp);
+        fft3c(&mut ksp);
+        let dur = now.elapsed().as_millis();
+        println!("two ffts took {dur} ms");
+
+        let orig = orig.map(|x| x.abs());
+        let ksp = ksp.map(|x| x.abs());
+
+        let mean_error = (&orig - &ksp).map(|x| x.abs()).mean().unwrap();
+        let mean_value = orig.mean().unwrap();
+
+        println!("mean error: {mean_error}");
+        println!("mean value: {mean_value}");
+        println!("relative error: {:.2e}", mean_error / mean_value);
+    }
+
+    #[test]
+    fn test_fft3_batched_shepp() {
+        println!("loading test data ...");
+        let mut ksp = to_array("shepp_512", true).unwrap().into_dimensionality::<Ix3>().unwrap();
+
+        let x1 = ksp.clone();
+
+        let batch_size = 10;
+        let views = (0..batch_size).map(|_| x1.view()).collect::<Vec<_>>();
+
+        let mut x: Array4<Complex32> = stack(Axis(3), &views).unwrap();
+        println!("{:?}", x.dim());
+        let now = Instant::now();
+        _fft3c_batched(&mut x, FftDirection::Inverse);
+        let dur = now.elapsed().as_millis();
+        println!("batched fft to {dur} ms");
+        //println!("converting to dyn ...");
+        //let x = x.into_dyn();
+        //println!("writing out ...");
+        //cfl::dump_magnitude("img", &x);
+        //cfl::dump_phase("imgp", &x);
     }
 }

@@ -105,7 +105,7 @@ where
 }
 
 /// calculates the block grid dimensions for a volume and block size
-fn grid_dim(vol_size: &[usize; 3], block_size: &[usize; 3]) -> [usize; 3] {
+pub fn grid_dim(vol_size: &[usize; 3], block_size: &[usize; 3]) -> [usize; 3] {
     let mut grid = [1usize; 3];
     grid.iter_mut().zip(vol_size).zip(block_size).for_each(|((n, vol_size), block_size)| {
         *n = vol_size / block_size;
@@ -139,31 +139,40 @@ fn matrix_stride(n_volumes: usize, block_size: &[usize; 3]) -> usize {
     matrix_size(n_volumes, block_size).iter().product()
 }
 
-fn lift_data_set<T>(volumes: &[&[T]], matrix_data: &mut [T], vol_size: &[usize; 3], block_size: &[usize; 3], shift: &[usize; 3], matrix_idx_start: usize, n_matrices: usize)
+pub fn lift_data_set<T>(volumes: &[&[T]], matrix_data: &mut [T], vol_size: &[usize; 3], block_size: &[usize; 3], shift: &[usize; 3], matrix_idx_start: usize, n_matrices: usize)
 where
     T: Copy + Send + Sync,
 {
     let mat_stride = matrix_stride(volumes.len(), block_size);
-    assert_eq!(matrix_data.len(), mat_stride * n_matrices, "unexpected matrix data size");
+    assert!(matrix_data.len() >= mat_stride * n_matrices, "matrix data buffer is too small");
+    let mut c = 0;
     for i in matrix_idx_start..(matrix_idx_start + n_matrices) {
-        let start = i * mat_stride;
+        //let start = i * mat_stride;
+        //let end = start + mat_stride; made start and end independent of block index
+        let start = c * mat_stride;
         let end = start + mat_stride;
         let mat = &mut matrix_data[start..end];
+        c += 1;
         let block = block_coord(i, &vol_size, &block_size, &shift); // + random shift
         read_matrix(&vol_size, &block_size, &block, volumes, mat);
     }
 }
 
-fn unlift_data_set<T>(volumes: &mut [&mut [T]], matrix_data: &[T], vol_size: &[usize; 3], block_size: &[usize; 3], shift: &[usize; 3], matrix_idx_start: usize, n_matrices: usize)
+pub fn un_lift_data_set<T>(volumes: &mut [&mut [T]], matrix_data: &[T], vol_size: &[usize; 3], block_size: &[usize; 3], shift: &[usize; 3], matrix_idx_start: usize, n_matrices: usize)
 where
     T: Copy + Send + Sync,
 {
     let mat_stride = matrix_stride(volumes.len(), block_size);
-    assert_eq!(matrix_data.len(), mat_stride * n_matrices, "unexpected matrix data size");
+    //assert_eq!(matrix_data.len(), mat_stride * n_matrices, "unexpected matrix data size");
+    assert!(matrix_data.len() >= mat_stride * n_matrices, "matrix data buffer is too small");
+    let mut c = 0;
     for i in matrix_idx_start..(matrix_idx_start + n_matrices) {
-        let start = i * mat_stride;
+        //let start = i * mat_stride;
+        //let end = start + mat_stride;
+        let start = c * mat_stride;
         let end = start + mat_stride;
         let mat = &matrix_data[start..end];
+        c += 1;
         let block = block_coord(i, &vol_size, &block_size, &shift); // + random shift
         write_matrix(&vol_size, &block_size, &block, volumes, mat);
     }
@@ -230,7 +239,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::block::{_read_block_unchecked, _write_block_unchecked, grid_dim, lift_data_set, unlift_data_set};
+    use crate::block::{_read_block_unchecked, _write_block_unchecked, grid_dim, lift_data_set, un_lift_data_set};
     use cfl::ndarray::{Array3, Array4, ShapeBuilder};
     use cfl::num_complex::Complex32;
 
@@ -268,7 +277,7 @@ mod tests {
 
 
     #[test]
-    fn test_lift_unlift_dataset() {
+    fn test_lift_un_lift_dataset() {
 
         // define the image volume size, number of volumes,
         // and matrix size based on the block size
@@ -321,7 +330,7 @@ mod tests {
         let matrix_data = matrix_batch.as_slice_memory_order().unwrap();
 
         // perform un-lifting operation to write matrix data back into the volumes
-        unlift_data_set(&mut volumes, matrix_data, &vol_size, &block_size, &shift, 0, n_matrices);
+        un_lift_data_set(&mut volumes, matrix_data, &vol_size, &block_size, &shift, 0, n_matrices);
 
         // assert that the data set we wrote to is the same as the original, testing that
         // the lifting / un-lifting did not corrupt the data set
