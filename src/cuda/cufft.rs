@@ -1,8 +1,10 @@
+use crate::array_utils::index_to_subscript_col_maj3;
 use crate::cuda::bindings::{cuComplex, cublasCreate_v2, cublasCscal_v2, cublasDestroy_v2, cublasHandle_t, cublasStatus_t_CUBLAS_STATUS_SUCCESS, cufftComplex, cufftDestroy, cufftExecC2C, cufftHandle, cufftPlan3d, cufftPlanMany, cufftResult_t_CUFFT_SUCCESS, cufftType_t_CUFFT_C2C, CUFFT_FORWARD, CUFFT_INVERSE};
 use crate::cuda::cuda_api::{copy_to_device, copy_to_host, cuda_free};
 use cfl::ndarray::parallel::prelude::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 use cfl::ndarray::{s, Array3, Array4, ArrayViewMut, Dim};
 use cfl::num_complex::Complex32;
+use rayon::prelude::IntoParallelRefIterator;
 use rayon::slice::ParallelSliceMut;
 use std::f32::consts::PI;
 use std::ffi::c_int;
@@ -124,29 +126,30 @@ pub(crate) fn cu_fftn_batch(dims: &[usize], batches: usize, fft_direction: FftDi
 
     let plan = plan_c2c_batch(dims, batches);
 
-
     let device_data = copy_to_device(data);
     let cufft_flag = match fft_direction {
         FftDirection::Forward => CUFFT_FORWARD as c_int,
         FftDirection::Inverse => CUFFT_INVERSE as c_int,
     };
 
-    unsafe {
-        let cufft_result = cufftExecC2C(
+    // launch fft
+    let cufft_result = unsafe {
+        cufftExecC2C(
             plan,
             device_data as *mut cufftComplex,
             device_data as *mut cufftComplex,
             cufft_flag,
-        );
+        )
+    };
 
-        if cufft_result != cufftResult_t_CUFFT_SUCCESS {
-            cufftDestroy(plan);
-            cuda_free(device_data);
-            panic!("cufftExecC2C failed: {}", cufft_result);
-        }
+    // clean up and panic if fft fails
+    if cufft_result != cufftResult_t_CUFFT_SUCCESS {
+        unsafe { cufftDestroy(plan); }
+        cuda_free(device_data);
+        panic!("cufftExecC2C failed: {}", cufft_result);
     }
-
-
+    
+    // run fft normalization
     let normalization = match norm {
         NormalizationType::Inverse => {
             if let FftDirection::Inverse = fft_direction {
@@ -168,6 +171,12 @@ pub(crate) fn cu_fftn_batch(dims: &[usize], batches: usize, fft_direction: FftDi
 
     copy_to_host(data, device_data);
     cuda_free(device_data);
+    unsafe {
+        let result = cufftDestroy(plan);
+        if result != cufftResult_t_CUFFT_SUCCESS {
+            panic!("cufftDestroy failed: {}", result);
+        }
+    }
 }
 
 /// scale a large array of complex data already on the device by some scale factor. You must provide
@@ -285,11 +294,64 @@ pub fn phase_shift3(dims: &[usize], x: &mut [Complex32], direction: FftDirection
     });
 }
 
+/// performs a phase shift on a 3-D volume of complex-values for use in centered fft
+pub fn phase_shift3_sub_vox(dims: &[usize; 3], x: &mut [Complex32], shift: &[f32; 3], direction: FftDirection) {
+    assert!(dims.len() <= 3, "only dims up to 3 are supported");
+    assert_eq!(dims.iter().product::<usize>(), x.len(), "dims must agree with the size of x");
+
+    let mut dims3 = [1; 3];
+    dims3.iter_mut().zip(dims.iter()).for_each(|(d, i)| *d = *i);
+
+    let sign = match direction {
+        FftDirection::Forward => -1.,
+        FftDirection::Inverse => 1.
+    };
+
+    x.par_iter_mut().enumerate().for_each(|(idx, value)| {
+        // let iz = idx / (dims3[0] * dims3[1]);
+        // let rem = idx % (dims3[0] * dims3[1]);
+        // let iy = rem / dims3[0];
+        // let ix = rem % dims3[0];
+        let [ix, iy, iz] = index_to_subscript_col_maj3(idx, dims);
+        let z_shift = phase_shift_sub_vox(iz, dims3[2], shift[2]);
+        let y_shift = phase_shift_sub_vox(iy, dims3[1], shift[1]);
+        let x_shift = phase_shift_sub_vox(ix, dims3[0], shift[0]);
+        let total_shift = sign * (x_shift + y_shift + z_shift);
+        *value = *value * Complex32::from_polar(1., total_shift);
+    });
+}
+
 #[inline]
-/// returns the phase shift associated with the centered fft
+/// Returns the phase shift for a given linear index along an image dimension of size n. This has
+/// the effect of shifting the axis by the FOV/2.
 fn phase_shift(index: usize, n: usize) -> f32 {
     assert!(index < n, "index out of range");
-    PI * (index as f32 - (n as f32 / 2.))
+    // the coordinate is the phase step multiple
+    let coord = index as f32 - (n as f32 / 2.);
+    // a phase shift of pi means shifting the image by 1/2 of the FOV
+    PI * coord
+}
+
+/// Returns the phase shift for a given linear index along an image dimension of size n. The
+/// axis shift is defined for any number of voxels, including fractions. Shifts of more than n will
+/// result in periodic behavior.
+fn phase_shift_sub_vox(index: usize, n: usize, shift_vox: f32) -> f32 {
+    assert!(index < n, "index out of range");
+    let n = n as f32;
+    let coord = index as f32 - (n / 2.);
+    let phase_multiplier = 2. * PI * shift_vox / n;
+    coord * phase_multiplier
+}
+
+/// returns the 3-D col-maj coordinate of the maximum energy sample
+pub fn max_coord(vol_size: &[usize; 3], vol_data: &[Complex32]) -> [usize; 3] {
+    let [nx, ny, nz]: [usize; 3] = *vol_size;
+    assert_eq!(nx * ny * nz, vol_data.len(), "mismatch between vol size and number of samples");
+    let max_idx = vol_data.par_iter().enumerate()
+        .map(|(index, s)| (index, s.norm_sqr()))
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(index, _)| index).expect("failed to find max of array");
+    index_to_subscript_col_maj3(max_idx, vol_size)
 }
 
 /// unitary forward centered fast fourier transform for CUDA devices

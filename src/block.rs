@@ -1,3 +1,4 @@
+use crate::array_utils::index_to_subscript_col_maj3;
 use cfl::ndarray::parallel::prelude::*;
 use std::sync::{Arc, Mutex};
 
@@ -39,10 +40,13 @@ where
 
     block_data.par_iter().enumerate().for_each(|(idx, &block_entry)| {
         // calculate the block coordinate
-        let mut iz = idx / (block_size[0] * block_size[1]);
-        let rem = idx % (block_size[0] * block_size[1]);
-        let mut iy = rem / block_size[0];
-        let mut ix = rem % block_size[0];
+
+        let [mut ix, mut iy, mut iz] = index_to_subscript_col_maj3(idx, &block_size);
+
+        // let mut iz = idx / (block_size[0] * block_size[1]);
+        // let rem = idx % (block_size[0] * block_size[1]);
+        // let mut iy = rem / block_size[0];
+        // let mut ix = rem % block_size[0];
 
         // apply block coord offset
         iz = (iz + block_coord[2]) % vol_size[2];
@@ -117,10 +121,11 @@ pub fn grid_dim(vol_size: &[usize; 3], block_size: &[usize; 3]) -> [usize; 3] {
 /// check if the block index is out of range.
 fn block_coord(block_idx: usize, vol_size: &[usize; 3], block_size: &[usize; 3], shift: &[usize; 3]) -> [usize; 3] {
     let grid_size = grid_dim(vol_size, block_size);
-    let mut iz = block_idx / (grid_size[0] * grid_size[1]);
-    let rem = block_idx % (grid_size[0] * grid_size[1]);
-    let mut iy = rem / grid_size[0];
-    let mut ix = rem % grid_size[0];
+    let [mut ix, mut iy, mut iz] = index_to_subscript_col_maj3(block_idx, &grid_size);
+    // let mut iz = block_idx / (grid_size[0] * grid_size[1]);
+    // let rem = block_idx % (grid_size[0] * grid_size[1]);
+    // let mut iy = rem / grid_size[0];
+    // let mut ix = rem % grid_size[0];
     ix = ix * block_size[0] + shift[0];
     iy = iy * block_size[1] + shift[1];
     iz = iz * block_size[2] + shift[2];

@@ -16,6 +16,8 @@ use cfl::num_complex::Complex32;
 pub mod fftshift;
 
 pub mod block;
+mod array_utils;
+pub mod signal_model;
 
 pub enum LlrError {
     ExtractMatrix
