@@ -148,7 +148,7 @@ pub(crate) fn cu_fftn_batch(dims: &[usize], batches: usize, fft_direction: FftDi
         cuda_free(device_data);
         panic!("cufftExecC2C failed: {}", cufft_result);
     }
-    
+
     // run fft normalization
     let normalization = match norm {
         NormalizationType::Inverse => {
@@ -266,56 +266,38 @@ fn cu_fft3(x: &mut Array3<Complex32>, fft_dir: FftDirection) {
     }
 }
 
-/// performs a phase shift on a 3-D volume of complex-values for use in centered fft
-pub fn phase_shift3(dims: &[usize], x: &mut [Complex32], direction: FftDirection) {
-    assert!(dims.len() <= 3, "only dims up to 3 are supported");
+/// Applies a sample-dependent linear phase shift to a complex volume to result in a FOV/2 shift
+/// in the associated frequency domain.
+pub fn phase_shift3(dims: &[usize; 3], x: &mut [Complex32], direction: FftDirection) {
     assert_eq!(dims.iter().product::<usize>(), x.len(), "dims must agree with the size of x");
-
-    let mut dims3 = [1; 3];
-    dims3.iter_mut().zip(dims.iter()).for_each(|(d, i)| *d = *i);
-
     let sign = match direction {
         FftDirection::Forward => -1.,
         FftDirection::Inverse => 1.
     };
-
     x.par_iter_mut().enumerate().for_each(|(idx, value)| {
-        let iz = idx / (dims3[0] * dims3[1]);
-        let rem = idx % (dims3[0] * dims3[1]);
-        let iy = rem / dims3[0];
-        let ix = rem % dims3[0];
-
-        let z_shift = phase_shift(iz, dims3[2]);
-        let y_shift = phase_shift(iy, dims3[1]);
-        let x_shift = phase_shift(ix, dims3[0]);
+        let [ix, iy, iz] = index_to_subscript_col_maj3(idx, dims);
+        let z_shift = phase_shift(iz, dims[2]);
+        let y_shift = phase_shift(iy, dims[1]);
+        let x_shift = phase_shift(ix, dims[0]);
         let total_shift = sign * (x_shift + y_shift + z_shift);
-
         *value = *value * Complex32::from_polar(1., total_shift);
     });
 }
 
-/// performs a phase shift on a 3-D volume of complex-values for use in centered fft
+/// Applies a sample-dependent linear phase shift to a complex volume based on the supplied shift
+/// coefficients and sign. A shift coefficient of 0 indicates no phase accumulation, and a phase shift
+/// of 1 is equivalent to a 1-sample shift in the associated frequency domain.
 pub fn phase_shift3_sub_vox(dims: &[usize; 3], x: &mut [Complex32], shift: &[f32; 3], direction: FftDirection) {
-    assert!(dims.len() <= 3, "only dims up to 3 are supported");
     assert_eq!(dims.iter().product::<usize>(), x.len(), "dims must agree with the size of x");
-
-    let mut dims3 = [1; 3];
-    dims3.iter_mut().zip(dims.iter()).for_each(|(d, i)| *d = *i);
-
     let sign = match direction {
         FftDirection::Forward => -1.,
         FftDirection::Inverse => 1.
     };
-
     x.par_iter_mut().enumerate().for_each(|(idx, value)| {
-        // let iz = idx / (dims3[0] * dims3[1]);
-        // let rem = idx % (dims3[0] * dims3[1]);
-        // let iy = rem / dims3[0];
-        // let ix = rem % dims3[0];
         let [ix, iy, iz] = index_to_subscript_col_maj3(idx, dims);
-        let z_shift = phase_shift_sub_vox(iz, dims3[2], shift[2]);
-        let y_shift = phase_shift_sub_vox(iy, dims3[1], shift[1]);
-        let x_shift = phase_shift_sub_vox(ix, dims3[0], shift[0]);
+        let z_shift = phase_shift_sub_vox(iz, dims[2], shift[2]);
+        let y_shift = phase_shift_sub_vox(iy, dims[1], shift[1]);
+        let x_shift = phase_shift_sub_vox(ix, dims[0], shift[0]);
         let total_shift = sign * (x_shift + y_shift + z_shift);
         *value = *value * Complex32::from_polar(1., total_shift);
     });
@@ -332,18 +314,18 @@ fn phase_shift(index: usize, n: usize) -> f32 {
     PI * coord
 }
 
-/// Returns the phase shift for a given linear index along an image dimension of size n. The
-/// axis shift is defined for any number of voxels, including fractions. Shifts of more than n will
-/// result in periodic behavior.
-fn phase_shift_sub_vox(index: usize, n: usize, shift_vox: f32) -> f32 {
+#[inline]
+/// Calculates the phase accumulation required to shift a signal's frequency representation by
+/// shift_samples. Note that the phase accumulation is sample index and signal length dependent.
+fn phase_shift_sub_vox(index: usize, n: usize, shift_samples: f32) -> f32 {
     assert!(index < n, "index out of range");
     let n = n as f32;
     let coord = index as f32 - (n / 2.);
-    let phase_multiplier = 2. * PI * shift_vox / n;
+    let phase_multiplier = 2. * PI * shift_samples / n;
     coord * phase_multiplier
 }
 
-/// returns the 3-D col-maj coordinate of the maximum energy sample
+/// returns the 3-D col-maj coordinate of the maximum energy sample (a^2 + b^2)
 pub fn max_coord(vol_size: &[usize; 3], vol_data: &[Complex32]) -> [usize; 3] {
     let [nx, ny, nz]: [usize; 3] = *vol_size;
     assert_eq!(nx * ny * nz, vol_data.len(), "mismatch between vol size and number of samples");
@@ -371,32 +353,32 @@ pub fn ifft3c(x: &mut Array3<Complex32>) {
 }
 
 fn _fft3c_batched(x: &mut Array4<Complex32>, direction: FftDirection) {
-    let dims: [usize; 4] = x.dim().into();
-    let batch_size = *dims.last().unwrap();
-    let vol_dims = &dims[0..3];
+    let [nx, ny, nz, nb]: [usize; 4] = x.dim().into();
+    let batch_size = nb;
+    let vol_dims = [nx, ny, nz];
     let vol_stride: usize = vol_dims.iter().product();
     let data = x.as_slice_memory_order_mut().unwrap();
     data.par_chunks_exact_mut(vol_stride).for_each(|vol| {
-        phase_shift3(vol_dims, vol, FftDirection::Inverse);
+        phase_shift3(&vol_dims, vol, FftDirection::Inverse);
     });
     cu_fftn_batch(&vol_dims, batch_size, direction, NormalizationType::Unitary, data);
     data.par_chunks_exact_mut(vol_stride).for_each(|vol| {
-        phase_shift3(vol_dims, vol, FftDirection::Forward);
+        phase_shift3(&vol_dims, vol, FftDirection::Forward);
     });
 }
 
 fn fft3c_batched_view(x: &mut ArrayViewMut<Complex32, Dim<[usize; 4]>>, direction: FftDirection) {
-    let dims: [usize; 4] = x.dim().into();
-    let batch_size = *dims.last().unwrap();
-    let vol_dims = &dims[0..3];
+    let [nx, ny, nz, nb]: [usize; 4] = x.dim().into();
+    let batch_size = nb;
+    let vol_dims = [nx, ny, nz];
     let vol_stride: usize = vol_dims.iter().product();
     let data = x.as_slice_memory_order_mut().unwrap();
     data.par_chunks_exact_mut(vol_stride).for_each(|vol| {
-        phase_shift3(vol_dims, vol, FftDirection::Inverse);
+        phase_shift3(&vol_dims, vol, FftDirection::Inverse);
     });
     cu_fftn_batch(&vol_dims, batch_size, direction, NormalizationType::Unitary, data);
     data.par_chunks_exact_mut(vol_stride).for_each(|vol| {
-        phase_shift3(vol_dims, vol, FftDirection::Forward);
+        phase_shift3(&vol_dims, vol, FftDirection::Forward);
     });
 }
 

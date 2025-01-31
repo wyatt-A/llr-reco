@@ -23,7 +23,7 @@ impl Into<FftDirection> for ModelDirection {
 }
 
 /// Performs the forward and inverse signal operator for a batch of volumes. Linear phase corrections
-/// can be specified to correct for sub-sample linear phase errors for both forward and inverse operators.
+/// can be specified to correct for sub-voxel linear phase errors for both forward and inverse operators.
 /// The corrections should remain constant regardless of operator sign. This is set up to be as efficient
 /// as possible, preventing the need for storing entire phase/coil sensitivity maps in memory. Phase corrections
 /// are instead applied on-the-fly in one shot to keep memory overhead to a minimum. If you need non-linear
@@ -71,6 +71,8 @@ pub fn signal_model(x: &mut [Complex32], image_size: &[usize; 3], batch_size: us
     }
 }
 
+/// Performs the forward and inverse signal operator on a large 4-D data set in batches to avoid
+/// memory-related challenges on the GPU. See [signal_model] for more usage insights
 pub fn signal_model_batched(x: &mut Array4<Complex32>, batch_size: usize, linear_corrections: &[&[f32; 3]], model_direction: ModelDirection) {
     let [nx, ny, nz, nq]: [usize; 4] = x.dim().into();
     assert_eq!(linear_corrections.len(), nq, "the number of linear corrections must be equal to number of volumes");
@@ -84,15 +86,20 @@ pub fn signal_model_batched(x: &mut Array4<Complex32>, batch_size: usize, linear
     }
 }
 
-pub fn estimate_linear_correction(ksp: &[Complex32], image_size: &[usize; 3]) -> [f32; 3] {
-    let [ix, iy, iz] = max_coord(image_size, ksp);
-    let ix = ix as i32 - (image_size[0] as i32 + 2 - 1) / 2;
-    let iy = iy as i32 - (image_size[1] as i32 + 2 - 1) / 2;
-    let iz = iz as i32 - (image_size[2] as i32 + 2 - 1) / 2;
+/// Estimates the linear phase correction for a 3D k-space volume, returning shift coefficients
+/// in units of samples. Shift coefficients of 0 indicate that the DC k-space sample if properly
+/// centered in the volume to produce no linear phase variations in the image after the centered
+/// inverse FFT. Note that fractional values are supported.
+pub fn estimate_linear_correction(ksp: &[Complex32], vol_size: &[usize; 3]) -> [f32; 3] {
+    let [ix, iy, iz] = max_coord(vol_size, ksp);
+    let ix = ix as i32 - (vol_size[0] as i32 + 2 - 1) / 2;
+    let iy = iy as i32 - (vol_size[1] as i32 + 2 - 1) / 2;
+    let iz = iz as i32 - (vol_size[2] as i32 + 2 - 1) / 2;
     [ix as f32, iy as f32, iz as f32]
 }
 
-
+/// Calculates the shift relative to the first sample in the k-space volume k(0,0,0). This is used
+/// to adjust the standard FFT where the DC sample is assumed to be the first sample.
 fn calc_shift(linear_correction: &[f32; 3], image_size: &[usize; 3]) -> [f32; 3] {
     let [mut sx, mut sy, mut sz] = *linear_correction;
     let [mut nx, mut ny, mut nz] = *image_size;

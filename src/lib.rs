@@ -18,6 +18,7 @@ pub mod fftshift;
 pub mod block;
 mod array_utils;
 pub mod signal_model;
+pub mod data_import;
 
 pub enum LlrError {
     ExtractMatrix

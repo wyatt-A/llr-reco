@@ -16,36 +16,19 @@ use std::time::Instant;
 fn main() {
     let data_set_dir = Path::new("B:/ProjectSpace/wa41/llr-reco-test-data/dti");
     let test_outputs = Path::new("B:/ProjectSpace/wa41/llr-reco-test-data/dti/out");
-    let filename_fn = |i: usize| format!("k{i}");
+    let filename_fn = |i: usize| format!("vol{:03}", i);
 
-    let rank = 1;
-    let n_vols_to_process = 61;
-    let n_total_vols = 67;
-    let n_iter = 10;
-    let vol_size = [590, 360, 360];
-    let data_set_size = [590, 360, 360, 61];
-    let block_size = [59, 36, 36];
-    let max_fft_vols_per_batch = 10;
-    let max_matrices_per_batch = 100;
-    let max_random_shift = [590, 360, 360];
-    let vols_indices_to_omit = [0, 11, 22, 33, 44, 55];
-
-    // let data_set_dir = Path::new("B:/ProjectSpace/wa41/llr-reco-test-data/shepp_logan");
-    // let test_outputs = Path::new("B:/ProjectSpace/wa41/llr-reco-test-data/shepp_logan/out");
-    // let filename_fn = |i: usize| format!("vol{:02}", i);
-    //
-    // let rank = 1;
-    // let n_vols_to_process = 61;
-    // let n_total_vols = 67;
-    // let n_iter = 10;
-    // let vol_size = [512, 512, 512];
-    // let data_set_size = [512, 512, 512, n_vols_to_process];
-    // let block_size = [32, 32, 32];
-    // let max_fft_vols_per_batch = 10;
-    // let max_matrices_per_batch = 400;
-    // let max_random_shift = [512, 512, 512];
-    // let vols_indices_to_omit = [0, 11, 22, 33, 44, 55];
-
+    let rank = 24;
+    let n_vols_to_process = 120;
+    let n_total_vols = 131;
+    let n_iter = 50;
+    let vol_size = [512, 284, 228];
+    let data_set_size = [512, 284, 228, n_vols_to_process];
+    let block_size = [32, 31, 38];
+    let max_fft_vols_per_batch = 20;
+    let max_matrices_per_batch = 200;
+    let max_random_shift = vol_size;
+    let vols_indices_to_omit = [0, 13, 26, 39, 52, 65, 78, 91, 104, 117, 130];
 
     if !test_outputs.exists() {
         fs::create_dir_all(test_outputs).unwrap();
