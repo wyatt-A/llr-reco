@@ -13,7 +13,8 @@ pub fn cublas_cgemm_strided_batched_device(
     m: usize,
     k: usize,
     n: usize,
-    batch_size: usize,
+    batch_size: usize, // number of matrices to process
+    broadcast_a: bool, // if we only have a single matrix b to multiply. This sets the b-stride to 0
     alpha: Complex32,
     beta: Complex32,
     transpose_a: bool,
@@ -59,8 +60,14 @@ pub fn cublas_cgemm_strided_batched_device(
         )
     };
 
-    let stride_a = m as c_longlong * k as c_longlong;
+    let stride_a = if broadcast_a {
+        0 as c_longlong // if b is broadcast, we don't want to increment with batch index
+    } else {
+        m as c_longlong * k as c_longlong
+    };
+
     let stride_b = k as c_longlong * n as c_longlong;
+    
     let ldc = m;
     let stride_c = m as c_longlong * n as c_longlong;
     let alpha_ptr = &alpha as *const Complex32 as *const cuComplex;

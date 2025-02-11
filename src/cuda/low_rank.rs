@@ -52,7 +52,7 @@ pub fn cu_low_rank_approx_batch(m: usize, n: usize, rank: usize, batch_size: usi
     let beta = Complex32::ZERO;
     let now = Instant::now();
     // reconstruct (U * S) * V^H, and write the result back into the original matrix data array on device
-    cublas_cgemm_strided_batched_device(m, rank, n, batch_size, alpha, beta, false, true, d_u as *mut cuComplex, d_v as *mut cuComplex, d_a as *mut cuComplex)
+    cublas_cgemm_strided_batched_device(m, rank, n, batch_size, false, alpha, beta, false, true, d_u as *mut cuComplex, d_v as *mut cuComplex, d_a as *mut cuComplex)
         .expect("cublas matrix multiply failed");
     let dur = now.elapsed();
     //println!("mat mul took {} ms", dur.as_millis());
@@ -131,6 +131,7 @@ mod tests {
             k,
             n,
             batch_size,
+            false,
             alpha,
             beta,
             false,

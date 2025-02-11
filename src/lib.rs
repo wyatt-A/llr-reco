@@ -1,9 +1,9 @@
 #[cfg(feature = "cuda")]
 pub mod cuda {
-    mod bindings;
+    pub mod bindings;
     pub mod cufft;
-    mod cuda_api;
-    mod cublas;
+    pub mod cuda_api;
+    pub mod cublas;
     mod cusolver;
     pub mod low_rank;
 }
@@ -13,12 +13,19 @@ use cfl::ndarray::{Array2, ShapeBuilder};
 use cfl::ndarray_linalg::JobSvd;
 use cfl::ndarray_linalg::SVDDC;
 use cfl::num_complex::Complex32;
+#[cfg(feature = "cuda")]
+pub mod signal_model;
+
 pub mod fftshift;
 
 pub mod block;
 mod array_utils;
-pub mod signal_model;
+
+#[cfg(feature = "cuda")]
 pub mod data_import;
+mod diffusion_models;
+#[cfg(feature = "cuda")]
+pub mod dti_subspace;
 
 pub enum LlrError {
     ExtractMatrix
