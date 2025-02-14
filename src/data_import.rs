@@ -1,6 +1,6 @@
 use crate::signal_model::{signal_model_batched, ModelDirection};
 use byteorder::ByteOrder;
-use cfl::ndarray::{Array2, Array4, Axis, Ix4, ShapeBuilder};
+use cfl::ndarray::{Array2, Array3, Array4, Axis, Ix3, Ix4, ShapeBuilder};
 use cfl::num_complex::Complex32;
 use cfl::num_traits;
 use cfl::num_traits::{ToPrimitive, Zero};
@@ -8,7 +8,226 @@ use num_traits::FromBytes;
 use rayon::prelude::*;
 use std::fs::File;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+pub struct DtiDataSetBuilder {
+    cfl_files: Vec<PathBuf>,
+    vol_dims: [usize; 3],
+    b_vecs: Option<Vec<[f32; 3]>>,
+    b_vals: Option<Vec<f32>>,
+    /// mask of cfl headers pointing to B0 volumes
+    b0_mask: Option<Vec<bool>>,
+    sample_mask: Option<Array3<Complex32>>,
+}
+
+impl DtiDataSetBuilder {
+    pub fn b_vecs(&self) -> &[[f32; 3]] {
+        self.b_vecs.as_ref().unwrap()
+    }
+
+    pub fn b_vals(&self) -> &[f32] {
+        self.b_vals.as_ref().unwrap()
+    }
+
+    pub fn b0_mask(&self) -> &[bool] {
+        self.b0_mask.as_ref().unwrap()
+    }
+
+    pub fn from_cfl_images<P: AsRef<Path> + Send + Sync, F: Fn(usize) -> P + Sync>(vol_indices: &[usize], filename_fn: &F) -> Self {
+        let n_vols = vol_indices.len();
+        assert!(n_vols > 0, "vol indices cannot be empty");
+
+        // load dimensions of first volume
+        let vol_dims = cfl::get_dims(filename_fn(vol_indices[0]))
+            .expect("failed to get volume dimensions")
+            // remove singleton dims
+            .into_iter().filter(|&dim| dim != 1).map(|x| x).collect::<Vec<_>>();
+
+        // load the rest of the headers to check consistency
+        vol_indices[1..].par_iter().for_each(|&idx| {
+            let dims = cfl::get_dims(filename_fn(idx))
+                .expect("failed to get volume dimensions")
+                // remove singleton dims
+                .into_iter().filter(|&dim| dim != 1).map(|x| x).collect::<Vec<_>>();
+            assert_eq!(vol_dims, dims, "mismatch between first volume dims and volume dims {idx}");
+        });
+
+        assert_eq!(vol_dims.len(), 3, "expecting n volume dims to be 3");
+
+        DtiDataSetBuilder {
+            cfl_files: vol_indices.iter().map(|&idx| filename_fn(idx).as_ref().to_path_buf()).collect(),
+            vol_dims: [vol_dims[0], vol_dims[1], vol_dims[2]],
+            b_vecs: None,
+            b_vals: None,
+            b0_mask: None,
+            sample_mask: None,
+        }
+    }
+
+    pub fn from_cfl_volume_dir(cfl_dir: impl AsRef<Path>, filename_pattern: impl AsRef<str>, num_expected_images: Option<usize>) -> Self {
+        let full_pattern = cfl_dir.as_ref().join(filename_pattern.as_ref()).with_extension("cfl").to_string_lossy().to_string();
+        let mut matching_files = glob::glob(&full_pattern)
+            .expect("failed to read glob pattern")
+            .flat_map(|f| f.ok())
+            .collect::<Vec<PathBuf>>();
+
+        if let Some(expected_images) = num_expected_images {
+            assert_eq!(matching_files.len(), expected_images, "unexpected number of filed found");
+        }
+
+        assert!(!matching_files.is_empty(), "no files found");
+
+        /// sort in ascending order, assuming numerical naming
+        matching_files.sort();
+
+        // load dimensions of first volume
+        let vol_dims = cfl::get_dims(&matching_files[0])
+            .expect("failed to get volume dimensions")
+            // remove singleton dims
+            .into_iter().filter(|&dim| dim != 1).map(|x| x).collect::<Vec<_>>();
+
+        // load the rest of the headers to check consistency
+        matching_files.par_iter().for_each(|file| {
+            let dims = cfl::get_dims(file)
+                .expect("failed to get volume dimensions")
+                // remove singleton dims
+                .into_iter().filter(|&dim| dim != 1).map(|x| x).collect::<Vec<_>>();
+            assert_eq!(vol_dims, dims, "mismatch between first volume dims and volume {}", file.file_name().unwrap().to_string_lossy());
+        });
+
+        assert_eq!(vol_dims.len(), 3, "expecting n volume dims to be 3");
+
+        DtiDataSetBuilder {
+            cfl_files: matching_files,
+            vol_dims: [vol_dims[0], vol_dims[1], vol_dims[2]],
+            b_vecs: None,
+            b_vals: None,
+            b0_mask: None,
+            sample_mask: None,
+        }
+    }
+
+    pub fn with_b_table(mut self, b_table: impl AsRef<Path>, b0_tol: f32) -> Self {
+        let mut f = File::open(b_table.as_ref().with_extension("txt")).expect("failed to open b table");
+        let mut s = String::new();
+
+        f.read_to_string(&mut s).expect("failed to read string");
+
+        let mut values: Vec<f32> = vec![];
+
+        s.split_ascii_whitespace().for_each(|character| {
+            if let Ok(val) = character.parse::<f32>() {
+                values.push(val);
+            } else {
+                panic!("failed to parse b-table at character: {}", character);
+            }
+        });
+
+        assert_eq!(values.len() % 4, 0, "number b-table entries must be divisible by 4: [b-value, gx, gy, gz]");
+        let n_vecs = values.len() / 4;
+
+        assert_eq!(n_vecs, self.cfl_files.len(), "expected {} bvecs, received {}", self.cfl_files.len(), n_vecs);
+
+        let mut b_vals = vec![0f32; n_vecs];
+        let mut b_vecs = vec![[0., 0., 0.]; n_vecs];
+
+        values.chunks_exact(4).zip(b_vals.iter_mut().zip(b_vecs.iter_mut())).for_each(|(a, (b, c))| {
+            *b = a[0];
+            c.copy_from_slice(&a[1..])
+        });
+
+        let b0_mask = b0_mask(&b_vecs, b0_tol);
+
+        self.b0_mask = Some(b0_mask);
+        self.b_vals = Some(b_vals);
+        self.b_vecs = Some(b_vecs);
+        self
+    }
+
+    pub fn load_dti_set(&self) -> Array4<Complex32> {
+        assert!(self.b0_mask.is_some(), "you must load a b-table first");
+        let b0_mask = self.b0_mask.as_ref().unwrap();
+        let dti_files = self.cfl_files.iter()
+            .zip(b0_mask.iter())
+            .filter(|(_, b)| !**b)
+            .map(|(cfl, _)| cfl)
+            .collect::<Vec<_>>();
+        self.load_volumes(&dti_files)
+    }
+
+    pub fn load_b0_set(&self) -> Array4<Complex32> {
+        assert!(self.b0_mask.is_some(), "you must load a b-table first");
+        let b0_mask = self.b0_mask.as_ref().unwrap();
+        let b0_files = self.cfl_files.iter()
+            .zip(b0_mask.iter())
+            .filter(|(_, b)| **b)
+            .map(|(cfl, _)| cfl)
+            .collect::<Vec<_>>();
+        self.load_volumes(&b0_files)
+    }
+
+    pub fn load_all(&self) -> Array4<Complex32> {
+        self.load_volumes(&self.cfl_files)
+    }
+
+    fn load_volumes<T: AsRef<Path> + Send + Sync>(&self, vols: &[T]) -> Array4<Complex32> {
+        let vol_stride = self.vol_dims.iter().product();
+        let total_samples = vol_stride * vols.len();
+        let mut array_data = vec![Complex32::zero(); total_samples];
+        array_data.par_chunks_exact_mut(vol_stride).zip(vols.par_iter()).for_each(|(vol_data, cfl)| {
+            cfl::read_to_buffer(cfl, vol_data).expect("failed to read cfl");
+        });
+        let [nx, ny, nz]: [usize; 3] = self.vol_dims;
+        Array4::from_shape_vec(
+            (nx, ny, nz, vols.len()).f(),
+            array_data,
+        ).expect("failed to create array")
+    }
+
+    pub fn with_sample_mask(mut self, sample_mask_cfl: impl AsRef<Path>) -> Self {
+        let sample_mask = cfl::to_array(sample_mask_cfl, true)
+            .unwrap()
+            .into_dimensionality::<Ix3>()
+            .unwrap();
+        let [ny, nz, nq]: [usize; 3] = sample_mask.dim().into();
+        assert_eq!(nq, self.cfl_files.len());
+        assert_eq!(ny, self.vol_dims[1]);
+        assert_eq!(nz, self.vol_dims[2]);
+        self.sample_mask = Some(sample_mask);
+        self
+    }
+
+    pub fn full_sample_mask(&self) -> &Array3<Complex32> {
+        &self.sample_mask.as_ref().expect("sample mask not specified")
+    }
+
+    pub fn dti_sample_mask(&self) -> Array3<Complex32> {
+        assert!(self.b0_mask.is_some(), "you must load a b-table first");
+        assert!(self.sample_mask.is_some(), "you must load a sample mask first");
+
+        let sample_mask = self.sample_mask.as_ref().unwrap();
+        let b0_mask = self.b0_mask.as_ref().unwrap();
+
+        // get all dti indices
+        let indices = b0_mask.iter().enumerate().filter(|(_, b)| !**b).map(|(i, _)| i).collect::<Vec<_>>();
+
+        let n_dti = indices.len();
+
+        let [ny, nz, _]: [usize; 3] = sample_mask.dim().into();
+
+        let pe_stride = ny * nz;
+        let mut mask_entries = vec![Complex32::zero(); ny * nz * n_dti];
+        let all_entries = sample_mask.as_slice_memory_order().unwrap();
+
+        indices.par_iter().zip(mask_entries.par_chunks_exact_mut(pe_stride)).for_each(|(&index, mask)| {
+            let range = index * pe_stride..(index * pe_stride + pe_stride);
+            mask.copy_from_slice(&all_entries[range])
+        });
+
+        Array3::from_shape_vec((ny, nz, n_dti).f(), mask_entries).unwrap()
+    }
+}
+
 
 pub fn read_civm_i16_volume(file_pattern: impl AsRef<Path>, vol_dims: &[usize; 3], complex_volume_data: &mut [Complex32]) {
     let [nx, ny, nz] = *vol_dims;
@@ -86,7 +305,7 @@ pub fn load_dataset(nii_4d: impl AsRef<Path>, b_vecs: impl AsRef<Path>) -> (Arra
     assert!(n_b0s > 0, "expected at least one b0 volume");
 
     println!("loading data ...");
-    let big_array = cfl::read_nifti_to_cfl(nii_4d, None::<&str>);
+    let big_array = cfl::read_nifti_to_cfl(nii_4d.as_ref(), None::<&Path>);
     let stack = big_array.into_dimensionality::<Ix4>().expect("failed to cast array into 4D");
     let [nx, ny, nz, nq]: [usize; 4] = stack.dim().into();
 
@@ -148,6 +367,32 @@ pub fn load_and_undersample(nii_4d: impl AsRef<Path>, b_vecs: impl AsRef<Path>, 
 
     (b0s, dti, b_vecs)
 }
+
+
+pub fn under_sample_kspace(data_set: &mut Array4<Complex32>, sample_masks: &Array3<Complex32>) {
+    let [nx, ny, nz, nq]: [usize; 4] = data_set.dim().into();
+
+    let [nsy, nsz, nsq]: [usize; 3] = sample_masks.dim().into();
+
+    assert_eq!([ny, nz], [nsy, nsz], "phase encoding dimension mismatch");
+    assert_eq!(nq, nsq, "contrast dimension mismatch");
+
+    let vol_stride = nx * ny * nz;
+    let pe_stride = ny * nz;
+
+    let mut sample_buff = data_set.as_slice_memory_order_mut().unwrap();
+    let msk_buffer = sample_masks.as_slice_memory_order().unwrap();
+
+    println!("applying sample mask to dti ...");
+    sample_buff.par_chunks_exact_mut(vol_stride).zip(msk_buffer.par_chunks_exact(pe_stride)).for_each(|(x, y)| {
+        x.chunks_exact_mut(nx).zip(y).for_each(|(line, msk)| {
+            if msk.is_zero() {
+                line.fill(Complex32::zero());
+            }
+        })
+    });
+}
+
 
 #[cfg(test)]
 mod tests {
