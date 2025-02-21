@@ -6,6 +6,7 @@ pub mod cuda {
     pub mod cublas;
     mod cusolver;
     pub mod low_rank;
+    pub mod cudwt3;
 }
 
 #[cfg(feature = "cuda")]
@@ -18,7 +19,7 @@ mod array_utils;
 
 #[cfg(feature = "cuda")]
 pub mod data_import;
-mod diffusion_models;
+pub mod diffusion_models;
 #[cfg(feature = "cuda")]
 pub mod dti_subspace;
 
@@ -28,11 +29,13 @@ use crate::data_import::{under_sample_kspace, DtiDataSetBuilder};
 use crate::dti_subspace::{conj_transpose_matrix, dti_back_project, dti_project};
 use crate::signal_model::{estimate_linear_correction, signal_model_batched, ModelDirection};
 use cfl;
-use cfl::ndarray::{Array3, Array4, Ix2, ShapeBuilder};
+use cfl::ndarray::{Array3, Array4, ArrayD, Axis, Ix2, ShapeBuilder};
 use cfl::ndarray_linalg::SVDDC;
-use cfl::num_complex::Complex32;
+use cfl::num_complex::{Complex32, ComplexFloat};
 use cfl::num_traits::Zero;
 use clap::Parser;
+use dwt;
+use dwt::wavelet::WaveletFilter;
 use rand::Rng;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -53,6 +56,8 @@ pub struct LlrReconParams {
     cas_mat_max_batch_size: usize,
     /// low-rank approximation of image data
     llr_block_rank: usize,
+    /// wavelet coefficient shrinkage parameter
+    wavelet_shrink_factor: f32,
     /// number of iterations
     n_iter: usize,
     /// subspace projection matrix stored as a 2-D col-major cfl
@@ -67,6 +72,7 @@ impl Default for LlrReconParams {
             fft_max_batch_size: 200,
             cas_mat_max_batch_size: 200,
             llr_block_rank: 6,
+            wavelet_shrink_factor: 0.005,
             n_iter: 60,
             subspace_projection_mat: Some(PathBuf::from("/path/to/matrix.cfl")),
         }
@@ -99,6 +105,8 @@ pub struct DataSetParams {
     expected_volumes: Option<usize>,
     /// flag differentiating input volumes in image space or k-space
     is_image: Option<bool>,
+    /// flag to specify b0 only reconstruction. If false, only dti volumes will be reconstructed.
+    recon_b0: Option<bool>,
 }
 
 /// main reconstruction routine
@@ -114,10 +122,27 @@ pub fn llr_recon_exec(data_set_params: &DataSetParams, recon_params: &LlrReconPa
         dataset = dataset.with_sample_mask(sample_mask);
     }
 
+
     // load data
     println!("loading data ...");
-    let mut data = dataset.load_all();
+    let recon_b0 = data_set_params.recon_b0.unwrap_or(false);
+    let n_dataset_volumes = dataset.total_volumes();
+
+    let (mut data, vol_indices) = if recon_b0 {
+        (
+            dataset.load_b0_set(),
+            dataset.b0_indices()
+        )
+    } else {
+        (
+            dataset.load_dti_set(),
+            dataset.dti_indices()
+        )
+    };
+
     let [nx, ny, nz, nq]: [usize; 4] = data.dim().into();
+
+    assert_eq!(vol_indices.len(), nq, "expected number of volume indices to agree with nq");
 
     // assume no signal model corrections for now
     let lin_img_corrections = vec![[0., 0., 0.]; nq];
@@ -144,14 +169,21 @@ pub fn llr_recon_exec(data_set_params: &DataSetParams, recon_params: &LlrReconPa
 
     // apply under sampling if specified
     if data_set_params.sample_mask_cfl.is_some() {
-        let sample_mask = dataset.full_sample_mask();
-        under_sample_kspace(&mut k_space, sample_mask);
+        //let sample_mask = dataset.full_sample_mask();
+        let sample_mask = if recon_b0 {
+            dataset.b0_sample_mask()
+        } else {
+            dataset.dti_sample_mask()
+        };
+        under_sample_kspace(&mut k_space, &sample_mask);
     }
 
     // re-bind to convenience variables
     let block_size = recon_params.llr_block_size;
     let vol_size = [nx, ny, nz];
+    let vol_stride = nx * ny * nz;
     let rank = recon_params.llr_block_rank;
+    let alpha = recon_params.wavelet_shrink_factor;
     let max_fft_batch_size = recon_params.fft_max_batch_size;
     let max_matrix_batch_size = recon_params.cas_mat_max_batch_size;
     let n_iter = recon_params.n_iter;
@@ -189,7 +221,7 @@ pub fn llr_recon_exec(data_set_params: &DataSetParams, recon_params: &LlrReconPa
     // assume that the supplied data serves as a measurement, which needs to be stored as immutable
     println!("cloning measurement data ...");
     let measurements = k_space.clone();
-    let under_sampling_factor = calc_undersampling_factor(&measurements);
+    let (under_sampling_factor, total_energy) = calc_undersampling_factor(&measurements);
     println!("under sampling factor: {:.03}", under_sampling_factor);
 
     println!("finding linear k-space corrections ...");
@@ -222,6 +254,7 @@ pub fn llr_recon_exec(data_set_params: &DataSetParams, recon_params: &LlrReconPa
     // allocate an array to store the relative error at each iteration
     let mut relative_iterate_error_hist = Vec::<f64>::with_capacity(n_iter);
     let mut init_err: Option<f64> = None;
+    let mut relative_mean_squared_error_hist = Vec::<f64>::with_capacity(n_iter);
 
     // determine the max random llr block shift
     let max_random_shift = recon_params.max_rand_shift.unwrap_or(vol_size);
@@ -262,7 +295,18 @@ pub fn llr_recon_exec(data_set_params: &DataSetParams, recon_params: &LlrReconPa
             un_lift_data_set(&mut volumes, matrix_data, &vol_size, &block_size, &shift, matrix_start_idx, n_matrices);
         }
         let dur = now.elapsed();
-        println!("regularization took  {} seconds", dur.as_secs());
+        println!("llr regularization took  {} seconds", dur.as_secs());
+
+        println!("performing wavelet denoising ...");
+
+        let now = Instant::now();
+        let mut data = data_iterate.as_slice_memory_order_mut().unwrap();
+        data.par_chunks_exact_mut(vol_stride).enumerate().for_each(|(i, vol)| {
+            println!("denoising vol {} ...", i + 1);
+            wavelet_denoise(vol, &vol_size, alpha);
+        });
+        let dur = now.elapsed();
+        println!("wavelet regularization took  {} seconds", dur.as_secs());
 
         signal_model_batched(
             &mut data_iterate,
@@ -274,8 +318,11 @@ pub fn llr_recon_exec(data_set_params: &DataSetParams, recon_params: &LlrReconPa
 
         let sum_sq_error = hard_project(&mut data_iterate, &measurements);
         let relative_iterate_error = sum_sq_error / *init_err.get_or_insert(sum_sq_error);
+        let relative_mean_squared_error = sum_sq_error / total_energy;
         relative_iterate_error_hist.push(relative_iterate_error);
-        println!("current error: {:.03}", relative_iterate_error);
+        relative_mean_squared_error_hist.push(relative_mean_squared_error);
+        println!("current relative error: {:.03}", relative_iterate_error);
+        println!("mse / total energy: {:.03e}", sum_sq_error / total_energy);
 
         signal_model_batched(
             &mut data_iterate,
@@ -284,12 +331,20 @@ pub fn llr_recon_exec(data_set_params: &DataSetParams, recon_params: &LlrReconPa
             &lin_img_corrections,
             ModelDirection::Inverse,
         );
+
+        if it % 10 == 0 {
+            println!("writing preview volume...");
+            let width = n_iter.to_string().len();
+            let vol = data_iterate.index_axis(Axis(3), 0).to_owned();
+            cfl::dump_magnitude(data_set_params.output_cfl_dir.join(format!("preview_i{it:0width$}", width = width)), &vol.into_dyn());
+        }
     }
 
     // iterations complete
 
     // write error history to json file
-    let mut err_hist_string = serde_json::to_string_pretty(&relative_iterate_error_hist).expect("JSON serialization failed");
+    //let mut err_hist_string = serde_json::to_string_pretty(&relative_iterate_error_hist).expect("JSON serialization failed");
+    let mut err_hist_string = serde_json::to_string_pretty(&relative_mean_squared_error_hist).expect("JSON serialization failed");
     err_hist_string.push_str("\n");
     let mut f = File::create(data_set_params.output_cfl_dir.join("error_history.json"))
         .expect("failed to create json file");
@@ -297,11 +352,11 @@ pub fn llr_recon_exec(data_set_params: &DataSetParams, recon_params: &LlrReconPa
 
     // write cfl volumes
     println!("writing results ...");
-    let filename_enum_width = nq.to_string().len();
+    let filename_enum_width = n_dataset_volumes.to_string().len();
     let raw_data = data_iterate.as_slice_memory_order().unwrap();
-    raw_data.par_chunks_exact(nx * ny * nz).enumerate().for_each(|(i, vol)| {
+    raw_data.par_chunks_exact(nx * ny * nz).zip(vol_indices).for_each(|(vol, idx)| {
         let filepath = data_set_params.output_cfl_dir.join(
-            format!("{}{i:0width$}", &data_set_params.output_cfl_prefix, width = filename_enum_width)
+            format!("{}{idx:0width$}", &data_set_params.output_cfl_prefix, width = filename_enum_width)
         );
         cfl::write_buffer(filepath, &[nx, ny, nz], vol).unwrap();
     })
@@ -350,12 +405,15 @@ fn hard_project(dataset: &mut Array4<Complex32>, measurements: &Array4<Complex32
     sum_squared_error
 }
 
-fn calc_undersampling_factor(measurements: &Array4<Complex32>) -> f64 {
+/// returns the under sampling factor and total energy of samples
+fn calc_undersampling_factor(measurements: &Array4<Complex32>) -> (f64, f64) {
     let x = measurements.as_slice_memory_order().unwrap();
     let non_zero = x.par_iter().map(|x| {
         (!x.is_zero()) as usize
     }).sum::<usize>() as f64;
-    x.len() as f64 / non_zero
+    let undersampling = x.len() as f64 / non_zero;
+    let total_energy = x.par_iter().map(|x| x.norm_sqr() as f64).sum::<f64>();
+    (undersampling, total_energy)
 }
 
 /// return a random shift up to max
@@ -368,6 +426,43 @@ fn rand_shift(max: &[usize; 3]) -> [usize; 3] {
     result
 }
 
+/// denoise a volume with wavelet coefficient shrinkage
+fn wavelet_denoise(volume_data: &mut [Complex32], volume_size: &[usize; 3], alpha: f32) {
+
+    // create temp array to store coefficients
+    let mut x = ArrayD::<Complex32>::zeros(volume_size.as_slice().f());
+
+    // insert data from buffer
+    x.as_slice_memory_order_mut().unwrap().copy_from_slice(volume_data);
+
+    // set up wavelet and max levels
+    let w = dwt::wavelet::Wavelet::new(dwt::wavelet::WaveletType::Daubechies2);
+    let s_len = *x.shape().iter().min().unwrap();
+    let n_levels = dwt::w_max_level(s_len, w.filt_len());
+
+    // do wavelet decomposition on volume
+    let mut dec = dwt::wavedec3(x, w, n_levels);
+
+    // shrink coefficients
+    for sub in dec.subbands.iter_mut() {
+        sub.par_mapv_inplace(|x| {
+            shrink_complex(x, alpha)
+        });
+    }
+
+    // reconstruct volume from coefficients
+    let y = dwt::waverec3(dec);
+
+    // copy data back to buffer
+    volume_data.copy_from_slice(y.as_slice_memory_order().unwrap());
+}
+
+fn shrink_complex(x: Complex32, alpha: f32) -> Complex32 {
+    let m = x.abs();
+    let d = (m - alpha).max(0.);
+    let shrink_factor = d / m;
+    x.scale(shrink_factor)
+}
 
 // fn low_rank_approx(input_mat: &mut Array2<Complex32>, rank: usize, tmp_s: &mut Array2<Complex32>) {
 //     let (u, mut s, v) = input_mat.svddc(JobSvd::Some).unwrap();

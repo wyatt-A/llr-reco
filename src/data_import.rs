@@ -226,6 +226,50 @@ impl DtiDataSetBuilder {
 
         Array3::from_shape_vec((ny, nz, n_dti).f(), mask_entries).unwrap()
     }
+
+    pub fn b0_sample_mask(&self) -> Array3<Complex32> {
+        assert!(self.b0_mask.is_some(), "you must load a b-table first");
+        assert!(self.sample_mask.is_some(), "you must load a sample mask first");
+
+        let sample_mask = self.sample_mask.as_ref().unwrap();
+        let b0_mask = self.b0_mask.as_ref().unwrap();
+
+        // get all b0 indices
+        let indices = b0_mask.iter().enumerate().filter(|(_, b)| **b).map(|(i, _)| i).collect::<Vec<_>>();
+
+        let n_b0 = indices.len();
+
+        let [ny, nz, _]: [usize; 3] = sample_mask.dim().into();
+
+        let pe_stride = ny * nz;
+        let mut mask_entries = vec![Complex32::zero(); ny * nz * n_b0];
+        let all_entries = sample_mask.as_slice_memory_order().unwrap();
+
+        indices.par_iter().zip(mask_entries.par_chunks_exact_mut(pe_stride)).for_each(|(&index, mask)| {
+            let range = index * pe_stride..(index * pe_stride + pe_stride);
+            mask.copy_from_slice(&all_entries[range])
+        });
+
+        Array3::from_shape_vec((ny, nz, n_b0).f(), mask_entries).unwrap()
+    }
+
+    pub fn dti_indices(&self) -> Vec<usize> {
+        assert!(self.b0_mask.is_some(), "you must load a b-table first");
+        let b0_mask = self.b0_mask.as_ref().unwrap();
+        // get all dti indices
+        b0_mask.iter().enumerate().filter(|(_, b)| !**b).map(|(i, _)| i).collect()
+    }
+
+    pub fn b0_indices(&self) -> Vec<usize> {
+        assert!(self.b0_mask.is_some(), "you must load a b-table first");
+        let b0_mask = self.b0_mask.as_ref().unwrap();
+        // get all b0 indices
+        b0_mask.iter().enumerate().filter(|(_, b)| **b).map(|(i, _)| i).collect()
+    }
+
+    pub fn total_volumes(&self) -> usize {
+        self.cfl_files.len()
+    }
 }
 
 

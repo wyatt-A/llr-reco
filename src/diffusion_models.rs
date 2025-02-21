@@ -3,24 +3,33 @@ use cfl::dump;
 use cfl::ndarray::{Array1, Array2, Array3, Array4, Axis, ShapeBuilder};
 use cfl::ndarray_linalg::{Eigh, LeastSquaresSvdInPlace, UPLO};
 use cfl::num_complex::ComplexFloat;
+use clap::Parser;
 use rayon::prelude::*;
-use std::path::Path;
+use std::path::PathBuf;
 use std::time::Instant;
 
-#[test]
-fn test_calc() {
-    let output_eig = Path::new("B:\\ProjectSpace\\wa41\\llr-reco-test-data\\recon_results\\dti_scalars");
+#[derive(Debug, Parser)]
+pub struct CalcScalarsArgs {
+    input_cfl_dir: PathBuf,
+    cfl_pattern: String,
+    b_table: PathBuf,
+    output_dir: PathBuf,
+    n_expected_vols: usize,
+}
 
-    let cfl_dir = "B:/ProjectSpace/wa41/llr-reco-test-data/image_data/xformed/xformed_affine/cfl";
-    let cfl_pattern = |i: usize| format!("{cfl_dir}/vol{:03}", i);
 
-    let b_table = "B:/ProjectSpace/wa41/llr-reco-test-data/image_data/b_vec_info/btable";
+pub fn calc_scalars(args: &CalcScalarsArgs) {
+    let n_expected_vols = args.n_expected_vols;
+    let cfl_dir = &args.input_cfl_dir;
+    let cfl_pattern = &args.cfl_pattern;
+    let b_table = &args.b_table;
+
+    let output_dir = &args.output_dir;
+
     let b0_null_vec_tol = 1e-6;
 
-    let cfl_images = (0..=130).collect::<Vec<_>>();
-    let dataset = DtiDataSetBuilder::from_cfl_images(&cfl_images, &cfl_pattern)
+    let dataset = DtiDataSetBuilder::from_cfl_volume_dir(&cfl_dir, cfl_pattern, Some(n_expected_vols))
         .with_b_table(b_table, b0_null_vec_tol);
-
     println!("loading data ...");
     let dti = dataset.load_dti_set();
     let b0s = dataset.load_b0_set();
@@ -44,7 +53,7 @@ fn test_calc() {
     let b0_average = Array3::from_shape_vec((nx, ny, nz).f(), b0_average).unwrap();
 
     println!("writing b0 average ...");
-    dump(output_eig.join("b0av"), &b0_average.clone().into_dyn());
+    dump(output_dir.join("b0av"), &b0_average.clone().into_dyn());
 
 
     let b0_mask = dataset.b0_mask();
@@ -55,14 +64,15 @@ fn test_calc() {
     build_design_matrix(&b, &g, a.as_slice_memory_order_mut().unwrap());
     let design_mat_entries = a.as_slice_memory_order().unwrap();
 
-    let mut result = Array4::zeros((6, nx, ny, nz).f());
+    let n_result_scalars = 3; // 3 diffusion eigenvalues
+    let mut result = Array4::zeros((n_result_scalars, nx, ny, nz).f());
     let r = result.as_slice_memory_order_mut().unwrap();
 
     let dti_data = dti.as_slice_memory_order().unwrap();
     let b0_data = b0_average.as_slice_memory_order().unwrap();
 
     println!("computing tensors ...");
-    r.par_chunks_exact_mut(6).enumerate().for_each(|(i, scalars)| {
+    r.par_chunks_exact_mut(n_result_scalars).enumerate().for_each(|(i, scalars)| {
         let mut rhs = vec![0f32; nq];
         let mut signal_buff = vec![0f32; nq];
         let mut tensor_buff = vec![0f32; 6];
@@ -84,9 +94,9 @@ fn test_calc() {
         scalars[1] = eigvals[1];
         scalars[2] = eigvals[0];
 
-        scalars[3] = eigvec[2];
-        scalars[4] = eigvec[1];
-        scalars[5] = eigvec[0];
+        //scalars[3] = eigvec[2];
+        //scalars[4] = eigvec[1];
+        //scalars[5] = eigvec[0];
     });
 
 
@@ -94,25 +104,28 @@ fn test_calc() {
     let lamb2 = result.index_axis(Axis(0), 1);
     let lamb3 = result.index_axis(Axis(0), 2);
 
-    let px = result.index_axis(Axis(0), 3);
-    let py = result.index_axis(Axis(0), 4);
-    let pz = result.index_axis(Axis(0), 5);
+    //let px = result.index_axis(Axis(0), 3);
+    //let py = result.index_axis(Axis(0), 4);
+    //let pz = result.index_axis(Axis(0), 5);
 
     println!("computing FA ...");
     let md = (&lamb1 + &lamb2 + &lamb3) / 3.;
+    let rd = (&lamb2 + &lamb3) / 2.;
     let num = ((&lamb1 - &md).map(|x| x.powi(2)) + (&lamb2 - &md).map(|x| x.powi(2)) + (&lamb3 - &md).map(|x| x.powi(2))).map(|x| x.sqrt());
     let denom = (lamb1.map(|x| x.powi(2)) + lamb2.map(|x| x.powi(2)) + lamb3.map(|x| x.powi(2))).map(|x| x.sqrt());
     let fa = (3. / 2.).sqrt() * num / denom;
 
     println!("writing nifti ...");
-    cfl::dump(output_eig.join("fa"), &fa.into_dyn());
-    cfl::dump(output_eig.join("e1"), &lamb1.to_owned().into_dyn());
-    cfl::dump(output_eig.join("e2"), &lamb2.to_owned().into_dyn());
-    cfl::dump(output_eig.join("e3"), &lamb3.to_owned().into_dyn());
+    dump(output_dir.join("fa"), &fa.into_dyn());
+    dump(output_dir.join("md"), &md.into_dyn());
+    dump(output_dir.join("rd"), &rd.into_dyn());
+    dump(output_dir.join("e3"), &lamb3.to_owned().into_dyn());
+    dump(output_dir.join("e1"), &lamb1.to_owned().into_dyn());
+    dump(output_dir.join("e2"), &lamb2.to_owned().into_dyn());
 
-    cfl::dump(output_eig.join("px"), &px.to_owned().into_dyn());
-    cfl::dump(output_eig.join("py"), &py.to_owned().into_dyn());
-    cfl::dump(output_eig.join("pz"), &pz.to_owned().into_dyn());
+    // cfl::dump(output_eig.join("px"), &px.to_owned().into_dyn());
+    // cfl::dump(output_eig.join("py"), &py.to_owned().into_dyn());
+    // cfl::dump(output_eig.join("pz"), &pz.to_owned().into_dyn());
 }
 
 
